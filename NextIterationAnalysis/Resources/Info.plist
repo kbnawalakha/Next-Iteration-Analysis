@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Next Iteration Analysis</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Select lifting videos so the app can track bar path, estimate velocity, and provide technique feedback.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Record lifting videos for bar path and technique analysis.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Capture audio when recording a training video.</string>
+</dict>
+</plist>
