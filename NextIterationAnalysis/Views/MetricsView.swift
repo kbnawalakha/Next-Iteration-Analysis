@@ -39,12 +39,12 @@ struct MetricsView: View {
     }
 
     private func meter(_ value: Double?) -> String {
-        guard let value else { return "n/a" }
+        guard let value = value else { return "n/a" }
         return "\(String(format: "%.2f", value)) norm"
     }
 
     private func speed(_ value: Double?) -> String {
-        guard let value else { return "n/a" }
+        guard let value = value else { return "n/a" }
         return "\(String(format: "%.2f", value))/s"
     }
 }

@@ -6,15 +6,17 @@ Next Iteration Analysis is an iPhone-first SwiftUI app scaffold for analyzing we
 
 - Photos video import with local storage and thumbnail generation.
 - Lift details form for lift type, weight, unit, reps, RPE, goal, and notes.
-- Manual tracking point selection plus an automatic plate-detection service boundary.
+- Manual tracking point selection plus optional Core ML plate detection and automatic plate candidate scoring.
 - Velocity-colored bar path overlay.
 - Basic metrics: displacement, speed, path consistency, technique score, confidence.
-- Rule-based critique with an AI-analysis service boundary for full video understanding.
+- Rule-based critique with a backend-ready AI-analysis client for full video understanding.
 - Next-weight recommendation logic with conservative and aggressive alternatives.
-- CSV export and annotated-video export entry points.
+- CSV export and annotated-video export with velocity-colored path rendering.
 - Side-by-side comparison for matching lift types.
 - Local history storage.
+- Vision body pose extraction.
+- Unit tests for recommendation and metrics logic.
 
 ## Notes
 
-Automatic plate detection, annotated video rendering, and full AI video understanding are scaffolded as replaceable services. The current implementation uses deterministic MVP heuristics so the app can be wired end to end before adding a Core ML detector, optical flow tracker, AVVideoComposition overlay renderer, or remote video-understanding backend.
+Automatic plate detection, bar tracking, annotated video rendering, and full AI video understanding are implemented behind replaceable services. Bundle `PlateBarbellDetector.mlmodelc` to enable trained plate/barbell detection; otherwise the app falls back to first-frame candidate scoring. The current tracker uses AVFoundation frame extraction plus template matching, which is a practical MVP step before adding a Lucas-Kanade optical flow pipeline.

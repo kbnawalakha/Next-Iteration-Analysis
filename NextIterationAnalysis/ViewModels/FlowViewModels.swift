@@ -12,7 +12,7 @@ final class VideoImportViewModel: ObservableObject {
     private let importService = VideoImportService()
 
     func importSelectedVideo() async {
-        guard let selectedItem else { return }
+        guard let selectedItem = selectedItem else { return }
         isImporting = true
         errorMessage = nil
         defer { isImporting = false }
@@ -61,6 +61,7 @@ final class AnalysisViewModel: ObservableObject {
     let trackingMode: TrackingMode
 
     private let tracker = BarPathTracker()
+    private let poseDetectionService = PoseDetectionService()
     private let metricsCalculator = LiftMetricsCalculator()
     private let ruleEngine = TechniqueRuleEngine()
     private let recommendationService = WeightRecommendationService()
@@ -87,6 +88,8 @@ final class AnalysisViewModel: ObservableObject {
             try await step(.loadingVideo)
             try await step(.extractingFrames)
             try await step(.detectingPose)
+            let poseFrames = await poseDetectionService.detectPoseFrames(videoURL: importedVideo?.videoURL)
+
             try await step(.detectingPlate)
             try await step(.trackingPath)
             let path = await tracker.track(
@@ -105,6 +108,7 @@ final class AnalysisViewModel: ObservableObject {
                 videoURL: importedVideo?.videoURL,
                 details: details,
                 metrics: metrics,
+                poseFrames: poseFrames,
                 critique: critique
             )
 
@@ -126,7 +130,7 @@ final class AnalysisViewModel: ObservableObject {
                 notes: details.notes.isEmpty ? nil : details.notes,
                 analysis: LiftAnalysis(
                     trackedPath: path,
-                    poseFrames: [],
+                    poseFrames: poseFrames,
                     metrics: metrics,
                     critique: critique,
                     recommendation: recommendation,
@@ -139,7 +143,7 @@ final class AnalysisViewModel: ObservableObject {
     }
 
     func exportCSV() {
-        guard let session else { return }
+        guard let session = session else { return }
         do {
             let url = try csvExportService.export(session: session)
             exportMessage = "CSV exported to \(url.lastPathComponent)"
@@ -149,7 +153,7 @@ final class AnalysisViewModel: ObservableObject {
     }
 
     func exportAnnotatedVideo() async {
-        guard let session else { return }
+        guard let session = session else { return }
         do {
             let url = try await annotatedVideoExportService.export(session: session)
             exportMessage = "Annotated video exported to \(url.lastPathComponent)"

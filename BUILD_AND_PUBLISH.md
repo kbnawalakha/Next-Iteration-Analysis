@@ -2,7 +2,7 @@
 
 ## 1. Requirements
 
-- macOS with full Xcode installed.
+- macOS with full Xcode 15 or newer installed.
 - Xcode command line tools pointed at Xcode:
 
 ```sh
@@ -59,23 +59,25 @@ Implemented as an end-to-end app scaffold:
 - Video import from Photos.
 - Lift details form.
 - Manual bar/plate point selection.
-- Automatic plate detection service boundary.
+- Automatic plate detection with optional bundled Core ML model support and first-frame circular contrast fallback.
 - Velocity-colored bar path overlay.
 - Movement metrics.
 - Rule-based technique critique.
 - Next-weight recommendation.
 - Local analysis history.
 - CSV export.
-- Annotated video export hook.
+- Annotated MP4 export with the actual velocity-colored path overlay.
 - Side-by-side comparison.
-- AI video-understanding service boundary.
+- AI video-understanding backend client for structured metrics and optional raw video.
+- Vision body pose extraction with `VNDetectHumanBodyPoseRequest`.
+- Unit tests for recommendation and metrics logic.
 
 Important MVP notes:
 
-- Automatic plate detection currently uses a heuristic placeholder. Replace `AutomaticPlateDetectionService` with a Vision/Core ML model.
-- Bar path tracking currently simulates an end-to-end path. Replace `BarPathTracker` with optical flow, template tracking, or a Core ML detector.
-- Annotated video export currently copies the original video. Replace `AnnotatedVideoExportService` with an `AVAssetExportSession` plus `AVVideoCompositionCoreAnimationTool`.
-- Full AI video understanding is represented by `AIAnalysisService`. Connect it to a backend before sending raw videos to any model.
+- Automatic plate detection first looks for a bundled `PlateBarbellDetector.mlmodelc`, then falls back to a lightweight on-device candidate scorer.
+- Bar path tracking uses AVFoundation frame extraction plus template matching around the selected plate patch. This is suitable for an MVP and can be upgraded to Lucas-Kanade optical flow, Vision tracking, or a Core ML detector.
+- Annotated video export uses `AVAssetExportSession` and `AVVideoCompositionCoreAnimationTool` to render the velocity-colored path into an MP4.
+- Full AI video understanding is represented by `AIAnalysisService`. It posts structured metrics and pose summary to a backend, and raw video upload remains opt-in.
 
 ## 6. Publish to GitHub
 
@@ -111,9 +113,8 @@ git push -u origin main
 
 ## 8. Suggested Next Engineering Iterations
 
-1. Replace simulated bar tracking with real frame extraction and optical flow.
-2. Add Vision body pose extraction with `VNDetectHumanBodyPoseRequest`.
-3. Train or integrate a plate/barbell detector for automatic detection.
-4. Render annotated video exports with the actual velocity-colored path.
-5. Add a backend endpoint for AI critique from structured metrics and optional raw video.
-6. Add unit tests for recommendation logic and metrics calculations.
+1. Replace the template matcher with Lucas-Kanade optical flow or Vision object tracking.
+2. Train a plate/barbell detector, compile it as `PlateBarbellDetector.mlmodelc`, and add it to the app bundle.
+3. Add richer lift-specific pose rules using the saved `PoseFrame` data.
+4. Host the AI critique endpoint and configure `AIAnalysisService` with its URL and API key.
+5. Add UI tests around the import, analysis, export, and comparison flows.

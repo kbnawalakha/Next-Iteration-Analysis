@@ -14,7 +14,7 @@ struct SideBySideComparisonView: View {
                 comparisonCard(title: "Previous", session: previous)
             }
 
-            if let previous {
+            if let previous = previous {
                 DeltaRow(
                     label: "Technique",
                     current: current.analysis?.metrics.techniqueScore ?? 0,

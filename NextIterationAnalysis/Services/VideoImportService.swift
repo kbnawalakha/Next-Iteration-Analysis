@@ -1,8 +1,8 @@
 import AVFoundation
+import CoreTransferable
 import Foundation
 import PhotosUI
 import SwiftUI
-import Transferable
 import UIKit
 import UniformTypeIdentifiers
 
