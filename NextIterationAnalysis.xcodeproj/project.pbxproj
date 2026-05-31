@@ -92,6 +92,16 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
+/* Begin PBXContainerItemProxy section */
+		G00000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E00000000000000000000002 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E00000000000000000000001;
+			remoteInfo = NextIterationAnalysis;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXGroup section */
 		D00000000000000000000001 = {
 			isa = PBXGroup;
@@ -243,6 +253,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				G00000000000000000000002 /* PBXTargetDependency */,
 			);
 			name = NextIterationAnalysisTests;
 			productName = NextIterationAnalysisTests;
@@ -350,6 +361,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		G00000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E00000000000000000000001 /* NextIterationAnalysis */;
+			targetProxy = G00000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		F00000000000000000000004 /* Debug */ = {
