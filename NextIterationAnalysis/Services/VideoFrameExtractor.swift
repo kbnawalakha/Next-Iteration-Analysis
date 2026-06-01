@@ -7,18 +7,22 @@ struct VideoFrame {
     let timestamp: Double
     let frameIndex: Int
     let image: CGImage
+    let nominalFrameRate: Double
 }
 
 final class VideoFrameExtractor {
+    func nominalFrameRate(for url: URL) async -> Double {
+        (try? await Self.videoFrameRate(for: AVURLAsset(url: url))) ?? 30
+    }
+
     func extractFrames(from url: URL, maxFrames: Int = 120) async throws -> [VideoFrame] {
         try await Task.detached(priority: .userInitiated) {
             let asset = AVURLAsset(url: url)
             let duration = try await asset.load(.duration).seconds
             guard duration.isFinite, duration > 0 else { return [] }
 
-            let tracks = try await asset.loadTracks(withMediaType: .video)
-            let fps = try await tracks.first?.load(.nominalFrameRate) ?? 30
-            let naturalFrameCount = max(1, Int(duration * Double(max(fps, 1))))
+            let fps = try await Self.videoFrameRate(for: asset)
+            let naturalFrameCount = max(1, Int(duration * max(fps, 1)))
             let frameCount = min(maxFrames, naturalFrameCount)
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
@@ -37,7 +41,8 @@ final class VideoFrameExtractor {
                     return VideoFrame(
                         timestamp: actualTime.seconds.isFinite ? actualTime.seconds : seconds,
                         frameIndex: index,
-                        image: image
+                        image: image,
+                        nominalFrameRate: fps
                     )
                 } catch {
                     return nil
@@ -58,13 +63,20 @@ final class VideoFrameExtractor {
             return VideoFrame(
                 timestamp: actualTime.seconds.isFinite ? actualTime.seconds : 0,
                 frameIndex: 0,
-                image: image
+                image: image,
+                nominalFrameRate: try await Self.videoFrameRate(for: asset)
             )
         }.value
     }
 
     func imageFromFile(_ url: URL) -> CGImage? {
         UIImage(contentsOfFile: url.path)?.cgImage
+    }
+
+    private static func videoFrameRate(for asset: AVURLAsset) async throws -> Double {
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        let nominalFrameRate = try await tracks.first?.load(.nominalFrameRate) ?? 0
+        return Double(nominalFrameRate > 0 ? nominalFrameRate : 30)
     }
 }
 
@@ -132,52 +144,22 @@ struct LuminanceFrame {
         let maxY = min(height - radius - 1, previousY + searchRadius)
         guard minX <= maxX, minY <= maxY else { return nil }
 
-        var bestError = Double.greatestFiniteMagnitude
+        var bestCorrelation = -Double.greatestFiniteMagnitude
         var bestX = previousX
         var bestY = previousY
 
         for y in stride(from: minY, through: maxY, by: 2) {
             for x in stride(from: minX, through: maxX, by: 2) {
-                let error = meanAbsoluteDifference(template: template, centerX: x, centerY: y, radius: radius)
-                if error < bestError {
-                    bestError = error
+                let correlation = normalizedCrossCorrelation(template: template, centerX: x, centerY: y, radius: radius)
+                if correlation > bestCorrelation {
+                    bestCorrelation = correlation
                     bestX = x
                     bestY = y
                 }
             }
         }
 
-        let confidence = max(0.05, min(0.98, 1 - bestError / 72))
-        return (
-            NormalizedPoint(x: Double(bestX) / Double(width), y: Double(bestY) / Double(height)),
-            confidence
-        )
-    }
-
-    func bestGlobalMatch(template: [UInt8], radius: Int) -> (point: NormalizedPoint, confidence: Double)? {
-        guard template.count == (radius * 2 + 1) * (radius * 2 + 1),
-              width > radius * 2 + 1,
-              height > radius * 2 + 1 else {
-            return nil
-        }
-
-        var bestError = Double.greatestFiniteMagnitude
-        var bestX = radius
-        var bestY = radius
-        let step = max(2, radius / 2)
-
-        for y in stride(from: radius, through: height - radius - 1, by: step) {
-            for x in stride(from: radius, through: width - radius - 1, by: step) {
-                let error = meanAbsoluteDifference(template: template, centerX: x, centerY: y, radius: radius)
-                if error < bestError {
-                    bestError = error
-                    bestX = x
-                    bestY = y
-                }
-            }
-        }
-
-        let confidence = max(0.05, min(0.9, 1 - bestError / 72))
+        let confidence = max(0.05, min(0.98, (bestCorrelation + 1) / 2))
         return (
             NormalizedPoint(x: Double(bestX) / Double(width), y: Double(bestY) / Double(height)),
             confidence
@@ -236,17 +218,39 @@ struct LuminanceFrame {
         return bestPoint
     }
 
-    private func meanAbsoluteDifference(template: [UInt8], centerX: Int, centerY: Int, radius: Int) -> Double {
+    private func normalizedCrossCorrelation(template: [UInt8], centerX: Int, centerY: Int, radius: Int) -> Double {
+        let count = max(template.count, 1)
+        let templateMean = template.reduce(0) { $0 + Double($1) } / Double(count)
+        var patchMean = 0.0
         var index = 0
-        var total = 0
         for y in (centerY - radius)...(centerY + radius) {
             let offset = y * width
             for x in (centerX - radius)...(centerX + radius) {
-                total += abs(Int(pixels[offset + x]) - Int(template[index]))
+                patchMean += Double(pixels[offset + x])
                 index += 1
             }
         }
-        return Double(total) / Double(max(template.count, 1))
+        patchMean /= Double(count)
+
+        index = 0
+        var numerator = 0.0
+        var templateVariance = 0.0
+        var patchVariance = 0.0
+        for y in (centerY - radius)...(centerY + radius) {
+            let offset = y * width
+            for x in (centerX - radius)...(centerX + radius) {
+                let templateDelta = Double(template[index]) - templateMean
+                let patchDelta = Double(pixels[offset + x]) - patchMean
+                numerator += templateDelta * patchDelta
+                templateVariance += templateDelta * templateDelta
+                patchVariance += patchDelta * patchDelta
+                index += 1
+            }
+        }
+
+        let denominator = sqrt(templateVariance * patchVariance)
+        guard denominator > 0 else { return -1 }
+        return numerator / denominator
     }
 
     private func circularContrastScore(centerX: Int, centerY: Int, radius: Int) -> Double {

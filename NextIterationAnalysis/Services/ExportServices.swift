@@ -30,6 +30,7 @@ final class AnnotatedVideoExportService {
         guard !(try await asset.loadTracks(withMediaType: .video)).isEmpty else {
             throw ExportError.missingVideoTrack
         }
+        let fps = await VideoFrameExtractor().nominalFrameRate(for: sourceURL)
 
         let overlayRenderer = AnnotatedVideoOverlayRenderer(path: analysis.trackedPath, reps: session.reps)
         let videoComposition = AVMutableVideoComposition(asset: asset) { request in
@@ -38,7 +39,7 @@ final class AnnotatedVideoExportService {
             let overlay = overlayRenderer.overlayImage(size: extent.size, extent: extent)
             request.finish(with: overlay.composited(over: source).cropped(to: extent), context: nil)
         }
-        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, Int(round(fps)))))
 
         let destination = try storage.makeExportURL(fileName: "\(session.liftType.rawValue)-annotated-\(session.id.uuidString.prefix(8)).mp4")
         if FileManager.default.fileExists(atPath: destination.path) {

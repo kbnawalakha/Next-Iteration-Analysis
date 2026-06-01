@@ -70,6 +70,7 @@ struct PointSelectionView: View {
 
     private var selectableFrame: some View {
         GeometryReader { proxy in
+            let imageRect = fittedImageRect(in: proxy.size)
             ZStack {
                 if let thumbnailURL = importedVideo?.thumbnailURL,
                    let uiImage = UIImage(contentsOfFile: thumbnailURL.path) {
@@ -92,15 +93,17 @@ struct PointSelectionView: View {
                     .frame(width: 18, height: 18)
                     .overlay(Circle().stroke(.white, lineWidth: 3))
                     .position(
-                        x: proxy.size.width * viewModel.selectedPoint.x,
-                        y: proxy.size.height * viewModel.selectedPoint.y
+                        x: imageRect.minX + imageRect.width * viewModel.selectedPoint.x,
+                        y: imageRect.minY + imageRect.height * viewModel.selectedPoint.y
                     )
             }
             .contentShape(Rectangle())
             .onTapGesture { location in
+                let clampedX = min(max(location.x, imageRect.minX), imageRect.maxX)
+                let clampedY = min(max(location.y, imageRect.minY), imageRect.maxY)
                 viewModel.selectedPoint = NormalizedPoint(
-                    x: Double(location.x / max(proxy.size.width, 1)),
-                    y: Double(location.y / max(proxy.size.height, 1))
+                    x: Double((clampedX - imageRect.minX) / max(imageRect.width, 1)),
+                    y: Double((clampedY - imageRect.minY) / max(imageRect.height, 1))
                 )
                 viewModel.markManuallyAdjusted()
             }
@@ -108,5 +111,18 @@ struct PointSelectionView: View {
         .aspectRatio(importedVideo?.metadata.aspectRatio ?? 16 / 9, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal)
+    }
+
+    private func fittedImageRect(in container: CGSize) -> CGRect {
+        let aspectRatio = importedVideo?.metadata.aspectRatio ?? 16 / 9
+        let containerRatio = container.width / max(container.height, 1)
+
+        if containerRatio > aspectRatio {
+            let width = container.height * aspectRatio
+            return CGRect(x: (container.width - width) / 2, y: 0, width: width, height: container.height)
+        } else {
+            let height = container.width / max(aspectRatio, 0.001)
+            return CGRect(x: 0, y: (container.height - height) / 2, width: container.width, height: height)
+        }
     }
 }

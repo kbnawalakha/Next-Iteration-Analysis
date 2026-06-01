@@ -160,29 +160,33 @@ final class LiftMetricsCalculator {
         guard range > 0.05 else { return [] }
 
         let minimumGap = max(4, smoothed.count / max(fallbackReps * 3, 6))
-        let prominence = range * 0.22
+        let velocities = zip(smoothed.dropFirst(), smoothed).map { current, previous in
+            (current.y - previous.y) / max(current.timestamp - previous.timestamp, 0.001)
+        }
+        let peakVelocity = velocities.map(abs).max() ?? 0
+        let velocityGate = max(0.02, peakVelocity * 0.18)
+        let prominence = range * 0.16
         var bottoms: [Int] = []
 
-        for index in 1..<(smoothed.count - 1) {
-            let previous = smoothed[index - 1].y
-            let current = smoothed[index].y
-            let next = smoothed[index + 1].y
-            let localDrop = current - min(previous, next)
-            let descent = current - ys[max(0, index - minimumGap)]
-            let ascent = current - ys[min(ys.count - 1, index + minimumGap)]
-            guard current >= previous,
-                  current > next,
-                  current - minY >= prominence,
-                  max(localDrop, min(descent, ascent)) >= prominence * 0.2 else {
-                continue
-            }
+        for index in 1..<velocities.count {
+            let previousVelocity = velocities[index - 1]
+            let currentVelocity = velocities[index]
+            let crossedFromDescentToAscent = previousVelocity > velocityGate && currentVelocity < -velocityGate
+            guard crossedFromDescentToAscent else { continue }
 
-            if let last = bottoms.last, index - last < minimumGap {
-                if current > smoothed[last].y {
-                    bottoms[bottoms.count - 1] = index
+            let bottomIndex = index
+            let lookback = max(0, bottomIndex - minimumGap)
+            let lookahead = min(ys.count - 1, bottomIndex + minimumGap)
+            let descentTravel = ys[bottomIndex] - (ys[lookback...bottomIndex].min() ?? ys[bottomIndex])
+            let ascentTravel = ys[bottomIndex] - (ys[bottomIndex...lookahead].min() ?? ys[bottomIndex])
+            guard min(descentTravel, ascentTravel) >= prominence else { continue }
+
+            if let last = bottoms.last, bottomIndex - last < minimumGap {
+                if smoothed[bottomIndex].y > smoothed[last].y {
+                    bottoms[bottoms.count - 1] = bottomIndex
                 }
             } else {
-                bottoms.append(index)
+                bottoms.append(bottomIndex)
             }
         }
 

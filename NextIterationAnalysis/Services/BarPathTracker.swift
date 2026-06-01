@@ -223,8 +223,8 @@ final class BarPathTracker {
 
         var previousPoint = initialCenter
         var velocity = NormalizedPoint(x: 0, y: 0)
-        let baseSearchRadius = max(12, min(firstLuminance.width, firstLuminance.height) / 10)
-        let recoverySearchRadius = max(baseSearchRadius * 2, min(firstLuminance.width, firstLuminance.height) / 4)
+        let searchRadius = min(60, max(12, min(firstLuminance.width, firstLuminance.height) / 4))
+        let confidenceGate = 0.62
         var trackedPoints: [TrackedPoint] = []
         var missedFrames = 0
 
@@ -240,30 +240,22 @@ final class BarPathTracker {
                 template: template,
                 radius: patchRadius,
                 around: predictedPoint,
-                searchRadius: baseSearchRadius
+                searchRadius: searchRadius
             )
-            let recoveryMatch = localMatch?.confidence ?? 0 >= 0.45
-                ? localMatch
-                : luminance.bestMatch(
-                    template: template,
-                    radius: patchRadius,
-                    around: predictedPoint,
-                    searchRadius: recoverySearchRadius
-                )
 
-            let globalMatch = (recoveryMatch?.confidence ?? 0) >= 0.4 && missedFrames == 0
-                ? nil
-                : luminance.bestGlobalMatch(template: template, radius: patchRadius)
-
-            guard let match = bestTrackingMatch(recoveryMatch, globalMatch: globalMatch) else {
+            guard let match = localMatch, match.confidence >= confidenceGate else {
                 missedFrames += 1
-                previousPoint = predictedPoint
+                previousPoint = clamped(interpolatedPoint(
+                    previous: previousPoint,
+                    predicted: predictedPoint,
+                    missedFrames: missedFrames
+                ))
                 trackedPoints.append(TrackedPoint(
                     id: UUID(),
                     timestamp: frame.timestamp,
                     frameIndex: frame.frameIndex,
-                    x: predictedPoint.x,
-                    y: predictedPoint.y,
+                    x: previousPoint.x,
+                    y: previousPoint.y,
                     confidence: 0.05
                 ))
                 continue
@@ -279,7 +271,7 @@ final class BarPathTracker {
                 x: center.x - previousPoint.x,
                 y: center.y - previousPoint.y
             )
-            let reacquired = missedFrames > 0 && match.confidence > 0.42
+            let reacquired = missedFrames > 0
             velocity = NormalizedPoint(
                 x: reacquired ? nextVelocity.x * 0.25 : velocity.x * 0.65 + nextVelocity.x * 0.35,
                 y: reacquired ? nextVelocity.y * 0.25 : velocity.y * 0.65 + nextVelocity.y * 0.35
@@ -287,8 +279,9 @@ final class BarPathTracker {
             previousPoint = center
             missedFrames = 0
 
-            if let freshPatch = luminance.patch(center: center, radius: patchRadius), match.confidence > 0.5 {
-                template = blend(template, with: freshPatch, newWeight: 0.16)
+            if frame.frameIndex % 10 == 0,
+               let freshPatch = luminance.patch(center: center, radius: patchRadius) {
+                template = blend(template, with: freshPatch, newWeight: 0.22)
             }
 
             trackedPoints.append(TrackedPoint(
@@ -341,6 +334,18 @@ final class BarPathTracker {
         hypot(first.x - second.x, first.y - second.y)
     }
 
+    private func interpolatedPoint(
+        previous: NormalizedPoint,
+        predicted: NormalizedPoint,
+        missedFrames: Int
+    ) -> NormalizedPoint {
+        let blendWeight = min(0.35, Double(missedFrames) * 0.08)
+        return NormalizedPoint(
+            x: previous.x * (1 - blendWeight) + predicted.x * blendWeight,
+            y: previous.y * (1 - blendWeight) + predicted.y * blendWeight
+        )
+    }
+
     private func blend(_ template: [UInt8], with freshPatch: [UInt8], newWeight: Double) -> [UInt8] {
         guard template.count == freshPatch.count else { return template }
         return zip(template, freshPatch).map { old, new in
@@ -348,19 +353,4 @@ final class BarPathTracker {
         }
     }
 
-    private func bestTrackingMatch(
-        _ localMatch: (point: NormalizedPoint, confidence: Double)?,
-        globalMatch: (point: NormalizedPoint, confidence: Double)?
-    ) -> (point: NormalizedPoint, confidence: Double)? {
-        switch (localMatch, globalMatch) {
-        case let (local?, global?) where global.confidence > local.confidence + 0.1:
-            return global
-        case let (local?, _):
-            return local
-        case let (nil, global?) where global.confidence > 0.36:
-            return global
-        default:
-            return nil
-        }
-    }
 }
