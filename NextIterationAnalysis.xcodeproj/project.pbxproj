@@ -37,6 +37,7 @@
 		A00000000000000000000028 /* PoseDetectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000030 /* PoseDetectionService.swift */; };
 		A00000000000000000000029 /* WeightRecommendationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000032 /* WeightRecommendationServiceTests.swift */; };
 		A00000000000000000000030 /* LiftMetricsCalculatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000033 /* LiftMetricsCalculatorTests.swift */; };
+		A00000000000000000000031 /* LiftTypeInferenceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000034 /* LiftTypeInferenceService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -73,6 +74,7 @@
 		B00000000000000000000031 /* NextIterationAnalysisTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NextIterationAnalysisTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B00000000000000000000032 /* WeightRecommendationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeightRecommendationServiceTests.swift; sourceTree = "<group>"; };
 		B00000000000000000000033 /* LiftMetricsCalculatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiftMetricsCalculatorTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000034 /* LiftTypeInferenceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiftTypeInferenceService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -179,6 +181,7 @@
 				B00000000000000000000030 /* PoseDetectionService.swift */,
 				B00000000000000000000007 /* LiftMetricsCalculator.swift */,
 				B00000000000000000000008 /* TechniqueRuleEngine.swift */,
+				B00000000000000000000034 /* LiftTypeInferenceService.swift */,
 				B00000000000000000000009 /* WeightRecommendationService.swift */,
 				B00000000000000000000010 /* ExportServices.swift */,
 				B00000000000000000000011 /* AIAnalysisService.swift */,
@@ -331,6 +334,7 @@
 				A00000000000000000000028 /* PoseDetectionService.swift in Sources */,
 				A00000000000000000000007 /* LiftMetricsCalculator.swift in Sources */,
 				A00000000000000000000008 /* TechniqueRuleEngine.swift in Sources */,
+				A00000000000000000000031 /* LiftTypeInferenceService.swift in Sources */,
 				A00000000000000000000009 /* WeightRecommendationService.swift in Sources */,
 				A00000000000000000000010 /* ExportServices.swift in Sources */,
 				A00000000000000000000011 /* AIAnalysisService.swift in Sources */,

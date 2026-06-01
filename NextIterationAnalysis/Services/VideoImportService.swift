@@ -58,6 +58,40 @@ final class VideoImportService {
         }.value
     }
 
+    func reducedSizeVideo(from importedVideo: ImportedLiftVideo, quality: VideoCompressionQuality = .medium) async throws -> ImportedLiftVideo {
+        let sourceURL = importedVideo.videoURL
+        let asset = AVURLAsset(url: sourceURL)
+        let destination = try storage.makeImportURL(for: URL(fileURLWithPath: "compressed.mp4"))
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: quality.presetName) else {
+            throw VideoImportError.compressionFailed
+        }
+
+        exportSession.outputURL = destination
+        exportSession.outputFileType = .mp4
+        exportSession.shouldOptimizeForNetworkUse = true
+
+        try await withCheckedThrowingContinuation { continuation in
+            exportSession.exportAsynchronously {
+                switch exportSession.status {
+                case .completed:
+                    continuation.resume()
+                case .failed, .cancelled:
+                    continuation.resume(throwing: exportSession.error ?? VideoImportError.compressionFailed)
+                default:
+                    continuation.resume(throwing: VideoImportError.compressionFailed)
+                }
+            }
+        }
+
+        let metadata = try await metadata(for: destination)
+        let thumbnailURL = try? await generateThumbnail(for: destination)
+        return ImportedLiftVideo(videoURL: destination, thumbnailURL: thumbnailURL, metadata: metadata)
+    }
+
     private func metadata(for url: URL) async throws -> VideoMetadata {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
@@ -121,6 +155,7 @@ enum VideoImportError: LocalizedError {
     case unreadableVideo
     case missingVideoTrack
     case thumbnailGenerationFailed
+    case compressionFailed
 
     var errorDescription: String? {
         switch self {
@@ -130,6 +165,29 @@ enum VideoImportError: LocalizedError {
             return "The selected file does not contain a readable video track."
         case .thumbnailGenerationFailed:
             return "The selected video thumbnail could not be generated."
+        case .compressionFailed:
+            return "The selected video could not be reduced."
+        }
+    }
+}
+
+enum VideoCompressionQuality: String, CaseIterable, Identifiable {
+    case medium
+    case small
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .medium: return "Medium"
+        case .small: return "Small"
+        }
+    }
+
+    var presetName: String {
+        switch self {
+        case .medium: return AVAssetExportPreset1280x720
+        case .small: return AVAssetExportPreset960x540
         }
     }
 }

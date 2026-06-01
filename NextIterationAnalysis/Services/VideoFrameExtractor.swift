@@ -154,6 +154,36 @@ struct LuminanceFrame {
         )
     }
 
+    func bestGlobalMatch(template: [UInt8], radius: Int) -> (point: NormalizedPoint, confidence: Double)? {
+        guard template.count == (radius * 2 + 1) * (radius * 2 + 1),
+              width > radius * 2 + 1,
+              height > radius * 2 + 1 else {
+            return nil
+        }
+
+        var bestError = Double.greatestFiniteMagnitude
+        var bestX = radius
+        var bestY = radius
+        let step = max(2, radius / 2)
+
+        for y in stride(from: radius, through: height - radius - 1, by: step) {
+            for x in stride(from: radius, through: width - radius - 1, by: step) {
+                let error = meanAbsoluteDifference(template: template, centerX: x, centerY: y, radius: radius)
+                if error < bestError {
+                    bestError = error
+                    bestX = x
+                    bestY = y
+                }
+            }
+        }
+
+        let confidence = max(0.05, min(0.9, 1 - bestError / 72))
+        return (
+            NormalizedPoint(x: Double(bestX) / Double(width), y: Double(bestY) / Double(height)),
+            confidence
+        )
+    }
+
     func likelyPlateCandidate() -> PlateDetectionResult? {
         let radius = max(7, min(width, height) / 22)
         var bestScore = 0.0

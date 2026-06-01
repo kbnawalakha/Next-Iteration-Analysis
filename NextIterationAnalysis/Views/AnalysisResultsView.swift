@@ -55,6 +55,13 @@ struct AnalysisResultsView: View {
                 }
                 .buttonStyle(.bordered)
 
+                if let exportedURL = analysisViewModel?.exportedURL {
+                    ShareLink(item: exportedURL) {
+                        Label("Share Export", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
                 if analysisViewModel == nil {
                     Text("Open exports immediately after a new analysis. Saved sessions keep the metrics and path.")
                         .font(.footnote)

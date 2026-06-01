@@ -37,6 +37,29 @@ struct VideoImportView: View {
                     MetadataRow(label: "FPS", value: importedVideo.metadata.fps.clean)
                     MetadataRow(label: "Resolution", value: importedVideo.metadata.resolution)
 
+                    Picker("Reduced size", selection: $viewModel.compressionQuality) {
+                        ForEach(VideoCompressionQuality.allCases) { quality in
+                            Text(quality.displayName).tag(quality)
+                        }
+                    }
+
+                    Button {
+                        Task { await viewModel.reduceVideoSize() }
+                    } label: {
+                        Label("Reduce Video Size", systemImage: "arrow.down.right.and.arrow.up.left")
+                    }
+                    .disabled(viewModel.isReducingVideo)
+
+                    if viewModel.isReducingVideo {
+                        ProgressView("Reducing video")
+                    }
+
+                    if let videoMessage = viewModel.videoMessage {
+                        Text(videoMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
                     NavigationLink("Continue") {
                         LiftDetailsView(importedVideo: importedVideo)
                     }

@@ -130,39 +130,91 @@ final class BarPathTracker {
 
         let initialCenter = firstLuminance.refinedPlateCenter(near: startingPoint) ?? startingPoint
         let patchRadius = max(5, min(firstLuminance.width, firstLuminance.height) / 34)
-        guard let template = firstLuminance.patch(center: initialCenter, radius: patchRadius) else {
+        guard var template = firstLuminance.patch(center: initialCenter, radius: patchRadius) else {
             return []
         }
 
         var previousPoint = initialCenter
-        let searchRadius = max(10, min(firstLuminance.width, firstLuminance.height) / 11)
+        var velocity = NormalizedPoint(x: 0, y: 0)
+        let baseSearchRadius = max(12, min(firstLuminance.width, firstLuminance.height) / 10)
+        let recoverySearchRadius = max(baseSearchRadius * 2, min(firstLuminance.width, firstLuminance.height) / 4)
+        var trackedPoints: [TrackedPoint] = []
+        var missedFrames = 0
 
-        return frames.compactMap { frame in
-            guard let luminance = LuminanceFrame(image: frame.image),
-                  var match = luminance.bestMatch(
+        for frame in frames {
+            guard let luminance = LuminanceFrame(image: frame.image) else { continue }
+
+            let predictedPoint = clamped(NormalizedPoint(
+                x: previousPoint.x + velocity.x,
+                y: previousPoint.y + velocity.y
+            ))
+
+            let localMatch = luminance.bestMatch(
+                template: template,
+                radius: patchRadius,
+                around: predictedPoint,
+                searchRadius: baseSearchRadius
+            )
+            let recoveryMatch = localMatch?.confidence ?? 0 >= 0.45
+                ? localMatch
+                : luminance.bestMatch(
                     template: template,
                     radius: patchRadius,
-                    around: previousPoint,
-                    searchRadius: searchRadius
-                  ) else {
-                return nil
+                    around: predictedPoint,
+                    searchRadius: recoverySearchRadius
+                )
+
+            let globalMatch = (recoveryMatch?.confidence ?? 0) >= 0.4 && missedFrames == 0
+                ? nil
+                : luminance.bestGlobalMatch(template: template, radius: patchRadius)
+
+            guard let match = bestTrackingMatch(recoveryMatch, globalMatch: globalMatch) else {
+                missedFrames += 1
+                previousPoint = predictedPoint
+                trackedPoints.append(TrackedPoint(
+                    id: UUID(),
+                    timestamp: frame.timestamp,
+                    frameIndex: frame.frameIndex,
+                    x: predictedPoint.x,
+                    y: predictedPoint.y,
+                    confidence: 0.05
+                ))
+                continue
             }
 
-            if let refinedCenter = luminance.refinedPlateCenter(near: match.point) {
-                match.point = refinedCenter
-                match.confidence = min(0.98, match.confidence + 0.06)
+            var center = match.point
+            if let refinedCenter = luminance.refinedPlateCenter(near: center),
+               distance(from: refinedCenter, to: center) < 0.045 {
+                center = refinedCenter
             }
 
-            previousPoint = match.point
-            return TrackedPoint(
+            let nextVelocity = NormalizedPoint(
+                x: center.x - previousPoint.x,
+                y: center.y - previousPoint.y
+            )
+            let reacquired = missedFrames > 0 && match.confidence > 0.42
+            velocity = NormalizedPoint(
+                x: reacquired ? nextVelocity.x * 0.25 : velocity.x * 0.65 + nextVelocity.x * 0.35,
+                y: reacquired ? nextVelocity.y * 0.25 : velocity.y * 0.65 + nextVelocity.y * 0.35
+            )
+            previousPoint = center
+            missedFrames = 0
+
+            if let freshPatch = luminance.patch(center: center, radius: patchRadius), match.confidence > 0.5 {
+                template = blend(template, with: freshPatch, newWeight: 0.16)
+            }
+
+            trackedPoints.append(TrackedPoint(
                 id: UUID(),
                 timestamp: frame.timestamp,
                 frameIndex: frame.frameIndex,
-                x: match.point.x,
-                y: match.point.y,
+                x: center.x,
+                y: center.y,
                 confidence: max(0.05, match.confidence)
-            )
+            ))
         }
+
+        return trackedPoints
     }
 
     private func simulatedPath(startingPoint: NormalizedPoint, reps: Int, mode: TrackingMode) -> [TrackedPoint] {
@@ -192,5 +244,36 @@ final class BarPathTracker {
 
     private func clamp(_ value: Double, _ lower: Double, _ upper: Double) -> Double {
         min(max(value, lower), upper)
+    }
+
+    private func clamped(_ point: NormalizedPoint) -> NormalizedPoint {
+        NormalizedPoint(x: clamp(point.x, 0.02, 0.98), y: clamp(point.y, 0.02, 0.98))
+    }
+
+    private func distance(from first: NormalizedPoint, to second: NormalizedPoint) -> Double {
+        hypot(first.x - second.x, first.y - second.y)
+    }
+
+    private func blend(_ template: [UInt8], with freshPatch: [UInt8], newWeight: Double) -> [UInt8] {
+        guard template.count == freshPatch.count else { return template }
+        return zip(template, freshPatch).map { old, new in
+            UInt8((Double(old) * (1 - newWeight) + Double(new) * newWeight).rounded())
+        }
+    }
+
+    private func bestTrackingMatch(
+        _ localMatch: (point: NormalizedPoint, confidence: Double)?,
+        globalMatch: (point: NormalizedPoint, confidence: Double)?
+    ) -> (point: NormalizedPoint, confidence: Double)? {
+        switch (localMatch, globalMatch) {
+        case let (local?, global?) where global.confidence > local.confidence + 0.1:
+            return global
+        case let (local?, _):
+            return local
+        case let (nil, global?) where global.confidence > 0.36:
+            return global
+        default:
+            return nil
+        }
     }
 }

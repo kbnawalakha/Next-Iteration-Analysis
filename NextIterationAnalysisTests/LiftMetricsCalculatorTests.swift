@@ -3,6 +3,7 @@ import XCTest
 
 final class LiftMetricsCalculatorTests: XCTestCase {
     private let calculator = LiftMetricsCalculator()
+    private let liftTypeInferenceService = LiftTypeInferenceService()
 
     func testCalculatesDisplacementAndVelocity() {
         let path = [
@@ -74,6 +75,33 @@ final class LiftMetricsCalculatorTests: XCTestCase {
         )
 
         XCTAssertEqual(metadata.aspectRatio ?? 0, 0.5625, accuracy: 0.0001)
+    }
+
+    func testLiftTypeInferenceKeepsExplicitSelection() {
+        let inferred = liftTypeInferenceService.inferLiftType(
+            selectedLiftType: .benchPress,
+            path: [
+                point(frame: 0, time: 0, x: 0.5, y: 0.8),
+                point(frame: 1, time: 1, x: 0.5, y: 0.3)
+            ],
+            poseFrames: []
+        )
+
+        XCTAssertEqual(inferred, .benchPress)
+    }
+
+    func testLiftTypeInferenceDetectsDeadliftFromLowRisingPlate() {
+        let inferred = liftTypeInferenceService.inferLiftType(
+            selectedLiftType: .analyzeFromVideo,
+            path: [
+                point(frame: 0, time: 0, x: 0.5, y: 0.82),
+                point(frame: 1, time: 1, x: 0.5, y: 0.62),
+                point(frame: 2, time: 2, x: 0.5, y: 0.50)
+            ],
+            poseFrames: []
+        )
+
+        XCTAssertEqual(inferred, .deadlift)
     }
 
     private func point(frame: Int, time: Double, x: Double, y: Double) -> TrackedPoint {

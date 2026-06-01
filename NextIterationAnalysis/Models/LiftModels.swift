@@ -1,6 +1,7 @@
 import Foundation
 
 enum LiftType: String, Codable, CaseIterable, Identifiable {
+    case analyzeFromVideo
     case squat
     case benchPress
     case deadlift
@@ -14,10 +15,15 @@ enum LiftType: String, Codable, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .analyzeFromVideo: return "Analyze From Video"
         case .benchPress: return "Bench Press"
         case .overheadPress: return "Overhead Press"
         default: return rawValue.capitalized
         }
+    }
+
+    var isVideoInferred: Bool {
+        self == .analyzeFromVideo
     }
 }
 
@@ -161,7 +167,7 @@ struct ImportedLiftVideo {
 }
 
 struct LiftDetails {
-    var liftType: LiftType = .squat
+    var liftType: LiftType = .analyzeFromVideo
     var weight: Double = 135
     var unit: WeightUnit = .lb
     var reps: Int = 5

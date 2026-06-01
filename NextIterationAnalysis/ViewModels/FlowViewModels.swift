@@ -7,7 +7,10 @@ final class VideoImportViewModel: ObservableObject {
     @Published var selectedItem: PhotosPickerItem?
     @Published var importedVideo: ImportedLiftVideo?
     @Published var isImporting = false
+    @Published var isReducingVideo = false
+    @Published var compressionQuality: VideoCompressionQuality = .medium
     @Published var errorMessage: String?
+    @Published var videoMessage: String?
 
     private let importService = VideoImportService()
 
@@ -19,6 +22,26 @@ final class VideoImportViewModel: ObservableObject {
 
         do {
             importedVideo = try await importService.importVideo(from: selectedItem)
+            videoMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func reduceVideoSize() async {
+        guard let importedVideo else { return }
+        isReducingVideo = true
+        errorMessage = nil
+        videoMessage = nil
+        defer { isReducingVideo = false }
+
+        do {
+            let reducedVideo = try await importService.reducedSizeVideo(
+                from: importedVideo,
+                quality: compressionQuality
+            )
+            self.importedVideo = reducedVideo
+            videoMessage = "Using reduced \(compressionQuality.displayName.lowercased()) video for analysis and export."
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -54,6 +77,7 @@ final class AnalysisViewModel: ObservableObject {
     @Published var session: LiftSession?
     @Published var errorMessage: String?
     @Published var exportMessage: String?
+    @Published var exportedURL: URL?
 
     let importedVideo: ImportedLiftVideo?
     let details: LiftDetails
@@ -64,6 +88,7 @@ final class AnalysisViewModel: ObservableObject {
     private let poseDetectionService = PoseDetectionService()
     private let metricsCalculator = LiftMetricsCalculator()
     private let ruleEngine = TechniqueRuleEngine()
+    private let liftTypeInferenceService = LiftTypeInferenceService()
     private let recommendationService = WeightRecommendationService()
     private let aiService = AIAnalysisService()
     private let csvExportService = CSVExportService()
@@ -101,19 +126,26 @@ final class AnalysisViewModel: ObservableObject {
 
             try await step(.calculatingMetrics)
             let metrics = metricsCalculator.calculate(path: path, reps: details.reps)
+            let analyzedLiftType = liftTypeInferenceService.inferLiftType(
+                selectedLiftType: details.liftType,
+                path: path,
+                poseFrames: poseFrames
+            )
+            var analyzedDetails = details
+            analyzedDetails.liftType = analyzedLiftType
 
             try await step(.generatingFeedback)
-            var critique = ruleEngine.critique(details: details, metrics: metrics, trackingMode: trackingMode)
+            var critique = ruleEngine.critique(details: analyzedDetails, metrics: metrics, trackingMode: trackingMode)
             critique = await aiService.refineCritique(
                 videoURL: importedVideo?.videoURL,
-                details: details,
+                details: analyzedDetails,
                 metrics: metrics,
                 poseFrames: poseFrames,
                 critique: critique
             )
 
             try await step(.recommendingWeight)
-            let recommendation = recommendationService.recommend(details: details, metrics: metrics)
+            let recommendation = recommendationService.recommend(details: analyzedDetails, metrics: metrics)
             let confidence = path.map(\.confidence).reduce(0, +) / Double(max(path.count, 1)) * 100
 
             session = LiftSession(
@@ -122,7 +154,7 @@ final class AnalysisViewModel: ObservableObject {
                 videoURL: importedVideo?.videoURL,
                 thumbnailURL: importedVideo?.thumbnailURL,
                 videoAspectRatio: importedVideo?.metadata.aspectRatio,
-                liftType: details.liftType,
+                liftType: analyzedLiftType,
                 weight: details.weight,
                 unit: details.unit,
                 reps: details.reps,
@@ -148,6 +180,7 @@ final class AnalysisViewModel: ObservableObject {
         do {
             let url = try csvExportService.export(session: session)
             exportMessage = "CSV exported to \(url.lastPathComponent)"
+            exportedURL = url
         } catch {
             exportMessage = error.localizedDescription
         }
@@ -158,6 +191,7 @@ final class AnalysisViewModel: ObservableObject {
         do {
             let url = try await annotatedVideoExportService.export(session: session)
             exportMessage = "Annotated video exported to \(url.lastPathComponent)"
+            exportedURL = url
         } catch {
             exportMessage = error.localizedDescription
         }
