@@ -29,7 +29,7 @@ final class PoseDetectionService {
             var confidenceCount = 0
 
             for (jointName, point) in recognizedPoints where point.confidence > 0.1 {
-                joints[jointName.rawValue] = JointPoint(
+                joints[String(describing: jointName)] = JointPoint(
                     x: Double(point.location.x),
                     y: Double(1 - point.location.y),
                     confidence: Double(point.confidence)
