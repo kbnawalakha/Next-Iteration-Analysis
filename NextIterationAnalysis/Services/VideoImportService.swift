@@ -13,8 +13,16 @@ struct PickedMovie: Transferable {
         FileRepresentation(contentType: .movie) { movie in
             SentTransferredFile(movie.url)
         } importing: { received in
+            let didAccess = received.file.startAccessingSecurityScopedResource()
+            defer {
+                if didAccess {
+                    received.file.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            let pathExtension = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
             let copy = FileManager.default.temporaryDirectory
-                .appendingPathComponent("\(UUID().uuidString).\(received.file.pathExtension)")
+                .appendingPathComponent("\(UUID().uuidString).\(pathExtension)")
             if FileManager.default.fileExists(atPath: copy.path) {
                 try FileManager.default.removeItem(at: copy)
             }
@@ -32,30 +40,39 @@ final class VideoImportService {
             throw VideoImportError.unreadableVideo
         }
 
-        let destination = try storage.makeImportURL(for: pickedMovie.url)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.copyItem(at: pickedMovie.url, to: destination)
+        return try await importVideo(fromLocalURL: pickedMovie.url)
+    }
 
-        let metadata = try await metadata(for: destination)
-        let thumbnailURL = try? await generateThumbnail(for: destination)
+    func importVideo(fromLocalURL sourceURL: URL) async throws -> ImportedLiftVideo {
+        try await Task.detached(priority: .userInitiated) {
+            let destination = try self.storage.makeImportURL(for: sourceURL)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.copyItem(at: sourceURL, to: destination)
 
-        return ImportedLiftVideo(videoURL: destination, thumbnailURL: thumbnailURL, metadata: metadata)
+            let metadata = try await self.metadata(for: destination)
+            let thumbnailURL = try? await self.generateThumbnail(for: destination)
+
+            return ImportedLiftVideo(videoURL: destination, thumbnailURL: thumbnailURL, metadata: metadata)
+        }.value
     }
 
     private func metadata(for url: URL) async throws -> VideoMetadata {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
         let tracks = try await asset.loadTracks(withMediaType: .video)
-        let track = tracks.first
-        let naturalSize = try await track?.load(.naturalSize) ?? .zero
-        let fps = try await track?.load(.nominalFrameRate) ?? 0
+        guard let track = tracks.first else {
+            throw VideoImportError.missingVideoTrack
+        }
+
+        let naturalSize = try await track.load(.naturalSize)
+        let fps = try await track.load(.nominalFrameRate)
         let resolution = "\(Int(abs(naturalSize.width))) x \(Int(abs(naturalSize.height)))"
 
         return VideoMetadata(
             duration: duration.isFinite ? duration : 0,
-            fps: Double(fps),
+            fps: fps.isFinite ? Double(fps) : 0,
             resolution: resolution,
             creationDate: nil
         )
@@ -66,18 +83,43 @@ final class VideoImportService {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
-        let image = UIImage(cgImage: cgImage)
-        let data = image.jpegData(compressionQuality: 0.85) ?? Data()
+        let data = try Self.jpegData(from: cgImage, maxDimension: 900)
         let destination = try storage.makeExportURL(fileName: "\(UUID().uuidString)-thumbnail.jpg")
         try data.write(to: destination, options: [.atomic])
         return destination
+    }
+
+    private static func jpegData(from image: CGImage, maxDimension: CGFloat) throws -> Data {
+        let width = CGFloat(image.width)
+        let height = CGFloat(image.height)
+        let scale = min(1, maxDimension / max(width, height, 1))
+        let size = CGSize(width: max(1, width * scale), height: max(1, height * scale))
+
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let thumbnail = renderer.image { _ in
+            UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: size))
+        }
+
+        guard let data = thumbnail.jpegData(compressionQuality: 0.82), !data.isEmpty else {
+            throw VideoImportError.thumbnailGenerationFailed
+        }
+        return data
     }
 }
 
 enum VideoImportError: LocalizedError {
     case unreadableVideo
+    case missingVideoTrack
+    case thumbnailGenerationFailed
 
     var errorDescription: String? {
-        "The selected video could not be imported."
+        switch self {
+        case .unreadableVideo:
+            return "The selected video could not be imported."
+        case .missingVideoTrack:
+            return "The selected file does not contain a readable video track."
+        case .thumbnailGenerationFailed:
+            return "The selected video thumbnail could not be generated."
+        }
     }
 }
