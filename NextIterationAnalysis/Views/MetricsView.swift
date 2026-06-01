@@ -11,6 +11,9 @@ struct MetricsView: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 metric("Weight", Formatting.weight(session.weight, unit: session.unit))
                 metric("Reps", "\(session.reps)")
+                metric("Detected Reps", detectedReps)
+                metric("Estimated RPE", decimal(session.analysis?.metrics.estimatedRPE))
+                metric("Est. 1RM", oneRepMax)
                 metric("Vertical", meter(session.analysis?.metrics.verticalDisplacement))
                 metric("Horizontal", meter(session.analysis?.metrics.horizontalDisplacement))
                 metric("Avg Speed", speed(session.analysis?.metrics.averageVelocity))
@@ -46,5 +49,20 @@ struct MetricsView: View {
     private func speed(_ value: Double?) -> String {
         guard let value = value else { return "n/a" }
         return "\(String(format: "%.2f", value))/s"
+    }
+
+    private var detectedReps: String {
+        guard let reps = session.analysis?.metrics.detectedReps else { return "n/a" }
+        return "\(reps)"
+    }
+
+    private var oneRepMax: String {
+        guard let oneRepMax = session.analysis?.metrics.estimatedOneRepMax else { return "n/a" }
+        return Formatting.weight(oneRepMax, unit: session.unit)
+    }
+
+    private func decimal(_ value: Double?) -> String {
+        guard let value = value else { return "n/a" }
+        return String(format: "%.1f", value)
     }
 }

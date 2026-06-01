@@ -125,7 +125,7 @@ final class AnalysisViewModel: ObservableObject {
             )
 
             try await step(.calculatingMetrics)
-            let metrics = metricsCalculator.calculate(path: path, reps: details.reps)
+            let metrics = metricsCalculator.calculate(path: path, reps: details.reps, weight: details.weight)
             let analyzedLiftType = liftTypeInferenceService.inferLiftType(
                 selectedLiftType: details.liftType,
                 path: path,
@@ -133,6 +133,8 @@ final class AnalysisViewModel: ObservableObject {
             )
             var analyzedDetails = details
             analyzedDetails.liftType = analyzedLiftType
+            analyzedDetails.reps = metrics.detectedReps ?? details.reps
+            analyzedDetails.rpe = details.rpe ?? metrics.estimatedRPE
 
             try await step(.generatingFeedback)
             var critique = ruleEngine.critique(details: analyzedDetails, metrics: metrics, trackingMode: trackingMode)
@@ -157,8 +159,8 @@ final class AnalysisViewModel: ObservableObject {
                 liftType: analyzedLiftType,
                 weight: details.weight,
                 unit: details.unit,
-                reps: details.reps,
-                rpe: details.rpe,
+                reps: analyzedDetails.reps,
+                rpe: analyzedDetails.rpe,
                 goal: details.goal,
                 notes: details.notes.isEmpty ? nil : details.notes,
                 analysis: LiftAnalysis(

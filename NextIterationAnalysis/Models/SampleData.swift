@@ -19,6 +19,9 @@ enum SampleData {
                 trackedPath: [],
                 poseFrames: [],
                 metrics: LiftMetrics(
+                    detectedReps: 5,
+                    estimatedRPE: 8.1,
+                    estimatedOneRepMax: 279,
                     verticalDisplacement: 0.61,
                     horizontalDisplacement: 0.07,
                     averageVelocity: 0.42,

@@ -4,7 +4,7 @@ final class WeightRecommendationService {
     func recommend(details: LiftDetails, metrics: LiftMetrics) -> WeightRecommendation {
         let increment = increment(for: details.liftType, unit: details.unit)
         let currentWeight = details.weight
-        let rpe = details.rpe ?? 8
+        let rpe = details.rpe ?? metrics.estimatedRPE ?? 8
         let score = metrics.techniqueScore
 
         if score >= 85, rpe <= 8 {

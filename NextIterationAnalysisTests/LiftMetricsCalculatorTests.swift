@@ -77,6 +77,49 @@ final class LiftMetricsCalculatorTests: XCTestCase {
         XCTAssertEqual(metadata.aspectRatio ?? 0, 0.5625, accuracy: 0.0001)
     }
 
+    func testDetectsRepsFromPlateBottoms() {
+        let path = [
+            point(frame: 0, time: 0.0, x: 0.5, y: 0.35),
+            point(frame: 1, time: 0.1, x: 0.5, y: 0.48),
+            point(frame: 2, time: 0.2, x: 0.5, y: 0.72),
+            point(frame: 3, time: 0.3, x: 0.5, y: 0.49),
+            point(frame: 4, time: 0.4, x: 0.5, y: 0.36),
+            point(frame: 5, time: 0.5, x: 0.5, y: 0.47),
+            point(frame: 6, time: 0.6, x: 0.5, y: 0.74),
+            point(frame: 7, time: 0.7, x: 0.5, y: 0.50),
+            point(frame: 8, time: 0.8, x: 0.5, y: 0.35),
+            point(frame: 9, time: 0.9, x: 0.5, y: 0.48),
+            point(frame: 10, time: 1.0, x: 0.5, y: 0.73),
+            point(frame: 11, time: 1.1, x: 0.5, y: 0.49),
+            point(frame: 12, time: 1.2, x: 0.5, y: 0.36)
+        ]
+
+        let metrics = calculator.calculate(path: path, reps: 1, weight: 225)
+
+        XCTAssertEqual(metrics.detectedReps, 3)
+        XCTAssertNotNil(metrics.estimatedRPE)
+        XCTAssertNotNil(metrics.estimatedOneRepMax)
+    }
+
+    func testEstimatedOneRepMaxUsesDetectedRepsAndRPE() {
+        let path = [
+            point(frame: 0, time: 0.0, x: 0.5, y: 0.35),
+            point(frame: 1, time: 0.1, x: 0.5, y: 0.50),
+            point(frame: 2, time: 0.2, x: 0.5, y: 0.72),
+            point(frame: 3, time: 0.3, x: 0.5, y: 0.50),
+            point(frame: 4, time: 0.4, x: 0.5, y: 0.35),
+            point(frame: 5, time: 0.5, x: 0.5, y: 0.49),
+            point(frame: 6, time: 0.6, x: 0.5, y: 0.73),
+            point(frame: 7, time: 0.7, x: 0.5, y: 0.48),
+            point(frame: 8, time: 0.8, x: 0.5, y: 0.36)
+        ]
+
+        let metrics = calculator.calculate(path: path, reps: 1, weight: 100)
+
+        XCTAssertEqual(metrics.detectedReps, 2)
+        XCTAssertGreaterThan(metrics.estimatedOneRepMax ?? 0, 106)
+    }
+
     func testLiftTypeInferenceKeepsExplicitSelection() {
         let inferred = liftTypeInferenceService.inferLiftType(
             selectedLiftType: .benchPress,

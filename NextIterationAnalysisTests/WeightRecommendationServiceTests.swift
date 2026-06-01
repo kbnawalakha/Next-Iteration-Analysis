@@ -7,6 +7,9 @@ final class WeightRecommendationServiceTests: XCTestCase {
     func testStrongLowRPELiftIncreasesWeight() {
         let details = LiftDetails(liftType: .squat, weight: 225, unit: .lb, reps: 5, rpe: 7.5, goal: .strength)
         let metrics = LiftMetrics(
+            detectedReps: 5,
+            estimatedRPE: 7.8,
+            estimatedOneRepMax: 270,
             verticalDisplacement: 0.5,
             horizontalDisplacement: 0.03,
             averageVelocity: 0.4,
@@ -25,6 +28,9 @@ final class WeightRecommendationServiceTests: XCTestCase {
     func testModerateTechniqueRepeatsWeight() {
         let details = LiftDetails(liftType: .benchPress, weight: 185, unit: .lb, reps: 5, rpe: 8.5, goal: .strength)
         let metrics = LiftMetrics(
+            detectedReps: 5,
+            estimatedRPE: 8.5,
+            estimatedOneRepMax: 220,
             verticalDisplacement: 0.4,
             horizontalDisplacement: 0.08,
             averageVelocity: 0.3,
@@ -43,6 +49,9 @@ final class WeightRecommendationServiceTests: XCTestCase {
     func testLowTechniqueDecreasesWeight() {
         let details = LiftDetails(liftType: .deadlift, weight: 315, unit: .lb, reps: 3, rpe: 9.5, goal: .strength)
         let metrics = LiftMetrics(
+            detectedReps: 3,
+            estimatedRPE: 9.5,
+            estimatedOneRepMax: 340,
             verticalDisplacement: 0.5,
             horizontalDisplacement: 0.2,
             averageVelocity: 0.2,

@@ -91,6 +91,9 @@ struct JointPoint: Codable {
 }
 
 struct LiftMetrics: Codable {
+    let detectedReps: Int?
+    let estimatedRPE: Double?
+    let estimatedOneRepMax: Double?
     let verticalDisplacement: Double?
     let horizontalDisplacement: Double?
     let averageVelocity: Double?
