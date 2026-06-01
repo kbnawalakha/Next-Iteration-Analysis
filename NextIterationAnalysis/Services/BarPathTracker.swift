@@ -111,11 +111,98 @@ final class BarPathTracker {
     ) async -> [TrackedPoint] {
         if let videoURL = videoURL,
            let trackedPoints = try? await trackWithTemplateMatching(videoURL: videoURL, startingPoint: startingPoint),
-           trackedPoints.count > 2 {
+           trackingScore(trackedPoints) > 0.18 {
             return SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints))
         }
 
+        if let videoURL = videoURL,
+           let visionPoints = try? await trackWithVision(videoURL: videoURL, startingPoint: startingPoint),
+           trackingScore(visionPoints) > 0.18 {
+            return SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(visionPoints))
+        }
+
         return simulatedPath(startingPoint: startingPoint, reps: reps, mode: mode)
+    }
+
+    private func trackWithVision(
+        videoURL: URL,
+        startingPoint: NormalizedPoint
+    ) async throws -> [TrackedPoint] {
+        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 160)
+        guard !frames.isEmpty else { return [] }
+
+        let handler = VNSequenceRequestHandler()
+        let boxSize = 0.16
+        let initialBox = CGRect(
+            x: clamp(startingPoint.x - boxSize / 2, 0.01, 0.99 - boxSize),
+            y: clamp(1 - startingPoint.y - boxSize / 2, 0.01, 0.99 - boxSize),
+            width: boxSize,
+            height: boxSize
+        )
+        var observation = VNDetectedObjectObservation(boundingBox: initialBox)
+        let request = VNTrackObjectRequest(detectedObjectObservation: observation)
+        request.trackingLevel = .accurate
+
+        var trackedPoints: [TrackedPoint] = []
+        var lastPoint = startingPoint
+        var missedFrames = 0
+
+        for frame in frames {
+            do {
+                request.inputObservation = observation
+                try handler.perform([request], on: frame.image)
+                guard let result = request.results?.first as? VNDetectedObjectObservation else {
+                    missedFrames += 1
+                    trackedPoints.append(TrackedPoint(
+                        id: UUID(),
+                        timestamp: frame.timestamp,
+                        frameIndex: frame.frameIndex,
+                        x: lastPoint.x,
+                        y: lastPoint.y,
+                        confidence: 0.05
+                    ))
+                    continue
+                }
+
+                observation = result
+                let box = result.boundingBox
+                let point = NormalizedPoint(x: Double(box.midX), y: Double(1 - box.midY))
+                let confidence = Double(result.confidence)
+                lastPoint = point
+                missedFrames = confidence < 0.18 ? missedFrames + 1 : 0
+                trackedPoints.append(TrackedPoint(
+                    id: UUID(),
+                    timestamp: frame.timestamp,
+                    frameIndex: frame.frameIndex,
+                    x: point.x,
+                    y: point.y,
+                    confidence: max(0.05, min(0.98, confidence))
+                ))
+
+                if missedFrames >= 3 {
+                    observation = VNDetectedObjectObservation(boundingBox: initialBox)
+                    missedFrames = 0
+                }
+            } catch {
+                missedFrames += 1
+                trackedPoints.append(TrackedPoint(
+                    id: UUID(),
+                    timestamp: frame.timestamp,
+                    frameIndex: frame.frameIndex,
+                    x: lastPoint.x,
+                    y: lastPoint.y,
+                    confidence: 0.05
+                ))
+            }
+        }
+
+        let averageConfidence = trackedPoints.map(\.confidence).reduce(0, +) / Double(max(trackedPoints.count, 1))
+        return averageConfidence > 0.14 ? trackedPoints : []
+    }
+
+    private func trackingScore(_ points: [TrackedPoint]) -> Double {
+        guard points.count > 2 else { return 0 }
+        return points.map(\.confidence).reduce(0, +) / Double(points.count)
     }
 
     private func trackWithTemplateMatching(

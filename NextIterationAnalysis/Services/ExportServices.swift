@@ -1,6 +1,6 @@
 import AVFoundation
+import CoreImage
 import Foundation
-import QuartzCore
 import UIKit
 
 final class CSVExportService {
@@ -21,58 +21,24 @@ final class CSVExportService {
 
 final class AnnotatedVideoExportService {
     private let storage = LocalStorageService()
-    private let metricsCalculator = LiftMetricsCalculator()
 
     func export(session: LiftSession) async throws -> URL {
         guard let sourceURL = session.videoURL else { throw ExportError.missingVideo }
         guard let analysis = session.analysis else { throw ExportError.missingAnalysis }
 
         let asset = AVURLAsset(url: sourceURL)
-        let videoTracks = try await asset.loadTracks(withMediaType: .video)
-        guard let videoTrack = videoTracks.first else { throw ExportError.missingVideoTrack }
-
-        let composition = AVMutableComposition()
-        guard let compositionVideoTrack = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            throw ExportError.exportFailed
+        guard !(try await asset.loadTracks(withMediaType: .video)).isEmpty else {
+            throw ExportError.missingVideoTrack
         }
 
-        let duration = try await asset.load(.duration)
-        try compositionVideoTrack.insertTimeRange(
-            CMTimeRange(start: .zero, duration: duration),
-            of: videoTrack,
-            at: .zero
-        )
-
-        if let audioTrack = try await asset.loadTracks(withMediaType: .audio).first,
-           let compositionAudioTrack = composition.addMutableTrack(
-            withMediaType: .audio,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-           ) {
-            try? compositionAudioTrack.insertTimeRange(
-                CMTimeRange(start: .zero, duration: duration),
-                of: audioTrack,
-                at: .zero
-            )
+        let overlayRenderer = AnnotatedVideoOverlayRenderer(path: analysis.trackedPath, reps: session.reps)
+        let videoComposition = AVMutableVideoComposition(asset: asset) { request in
+            let source = request.sourceImage.clampedToExtent()
+            let extent = source.extent
+            let overlay = overlayRenderer.overlayImage(size: extent.size, extent: extent)
+            request.finish(with: overlay.composited(over: source).cropped(to: extent), context: nil)
         }
-
-        let naturalSize = try await videoTrack.load(.naturalSize)
-        let preferredTransform = try await videoTrack.load(.preferredTransform)
-        let renderSize = transformedSize(naturalSize, transform: preferredTransform)
-        compositionVideoTrack.preferredTransform = preferredTransform
-
-        let instruction = AVMutableVideoCompositionInstruction()
-        instruction.timeRange = CMTimeRange(start: .zero, duration: duration)
-        let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compositionVideoTrack)
-        instruction.layerInstructions = [layerInstruction]
-
-        let videoComposition = AVMutableVideoComposition()
-        videoComposition.instructions = [instruction]
-        videoComposition.renderSize = renderSize
         videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-        videoComposition.animationTool = animationTool(renderSize: renderSize, path: analysis.trackedPath, reps: session.reps)
 
         let destination = try storage.makeExportURL(fileName: "\(session.liftType.rawValue)-annotated-\(session.id.uuidString.prefix(8)).mp4")
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -80,8 +46,8 @@ final class AnnotatedVideoExportService {
         }
 
         guard let exportSession = AVAssetExportSession(
-            asset: composition,
-            presetName: AVAssetExportPresetHighestQuality
+            asset: asset,
+            presetName: AVAssetExportPreset1280x720
         ) else {
             throw ExportError.exportFailed
         }
@@ -90,13 +56,14 @@ final class AnnotatedVideoExportService {
         exportSession.outputFileType = .mp4
         exportSession.videoComposition = videoComposition
 
+        let exportBox = ExportSessionBox(exportSession)
         try await withCheckedThrowingContinuation { continuation in
-            exportSession.exportAsynchronously {
-                switch exportSession.status {
+            exportBox.session.exportAsynchronously {
+                switch exportBox.session.status {
                 case .completed:
                     continuation.resume()
                 case .failed, .cancelled:
-                    continuation.resume(throwing: exportSession.error ?? ExportError.exportFailed)
+                    continuation.resume(throwing: exportBox.session.error ?? ExportError.exportFailed)
                 default:
                     continuation.resume(throwing: ExportError.exportFailed)
                 }
@@ -105,94 +72,110 @@ final class AnnotatedVideoExportService {
 
         return destination
     }
+}
 
-    private func animationTool(renderSize: CGSize, path: [TrackedPoint], reps: Int) -> AVVideoCompositionCoreAnimationTool {
-        let parentLayer = CALayer()
-        let videoLayer = CALayer()
-        let overlayLayer = CALayer()
+private final class ExportSessionBox: @unchecked Sendable {
+    let session: AVAssetExportSession
 
-        parentLayer.frame = CGRect(origin: .zero, size: renderSize)
-        videoLayer.frame = parentLayer.bounds
-        overlayLayer.frame = parentLayer.bounds
-        parentLayer.addSublayer(videoLayer)
-        parentLayer.addSublayer(overlayLayer)
+    init(_ session: AVAssetExportSession) {
+        self.session = session
+    }
+}
 
-        addVelocityPath(to: overlayLayer, renderSize: renderSize, path: path, reps: reps)
-        addWatermark(to: overlayLayer, renderSize: renderSize)
+final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
+    private let path: [TrackedPoint]
+    private let reps: Int
+    private let metricsCalculator = LiftMetricsCalculator()
+    private let lock = NSLock()
+    private var overlayCache: [String: CIImage] = [:]
 
-        return AVVideoCompositionCoreAnimationTool(
-            postProcessingAsVideoLayer: videoLayer,
-            in: parentLayer
-        )
+    init(path: [TrackedPoint], reps: Int) {
+        self.path = path
+        self.reps = reps
     }
 
-    private func addVelocityPath(to layer: CALayer, renderSize: CGSize, path: [TrackedPoint], reps: Int) {
+    func overlayImage(size: CGSize, extent: CGRect) -> CIImage {
+        let cacheKey = "\(Int(size.width))x\(Int(size.height))-\(path.count)-\(reps)"
+        lock.lock()
+        if let cached = overlayCache[cacheKey] {
+            lock.unlock()
+            return cached.transformed(by: CGAffineTransform(translationX: extent.origin.x, y: extent.origin.y))
+        }
+        lock.unlock()
+
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            UIColor.clear.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            drawVelocityPath(size: size, path: path, reps: reps)
+            drawWatermark(size: size)
+        }
+
+        let overlay = CIImage(image: image)?
+            .transformed(by: CGAffineTransform(scaleX: 1, y: -1))
+            .transformed(by: CGAffineTransform(translationX: 0, y: size.height))
+            ?? CIImage.empty()
+
+        lock.lock()
+        overlayCache[cacheKey] = overlay
+        lock.unlock()
+        return overlay.transformed(by: CGAffineTransform(translationX: extent.origin.x, y: extent.origin.y))
+    }
+
+    private func drawVelocityPath(size: CGSize, path: [TrackedPoint], reps: Int) {
         let repSegments = metricsCalculator.repSegments(for: path, reps: reps)
         if repSegments.isEmpty {
-            addVelocitySegments(metricsCalculator.velocitySegments(for: path), opacity: 1, to: layer, renderSize: renderSize)
+            drawVelocitySegments(metricsCalculator.velocitySegments(for: path), opacity: 1, size: size)
         } else {
             for rep in repSegments {
-                addVelocitySegments(
-                    metricsCalculator.velocitySegments(for: rep.points),
-                    opacity: rep.opacity,
-                    to: layer,
-                    renderSize: renderSize
-                )
-                let bottom = cgPoint(rep.bottom, renderSize: renderSize)
-                let bottomMarker = CAShapeLayer()
-                bottomMarker.path = UIBezierPath(ovalIn: CGRect(x: bottom.x - 9, y: bottom.y - 9, width: 18, height: 18)).cgPath
-                bottomMarker.fillColor = UIColor.clear.cgColor
-                bottomMarker.strokeColor = UIColor.white.withAlphaComponent(rep.opacity).cgColor
-                bottomMarker.lineWidth = 3
-                layer.addSublayer(bottomMarker)
+                drawVelocitySegments(metricsCalculator.velocitySegments(for: rep.points), opacity: rep.opacity, size: size)
+                let bottom = cgPoint(rep.bottom, renderSize: size)
+                let marker = UIBezierPath(ovalIn: CGRect(x: bottom.x - 9, y: bottom.y - 9, width: 18, height: 18))
+                UIColor.white.withAlphaComponent(rep.opacity).setStroke()
+                marker.lineWidth = 3
+                marker.stroke()
             }
         }
 
         guard let current = path.last else { return }
-        let marker = CAShapeLayer()
-        let point = cgPoint(current, renderSize: renderSize)
-        marker.path = UIBezierPath(
-            ovalIn: CGRect(x: point.x - 9, y: point.y - 9, width: 18, height: 18)
-        ).cgPath
-        marker.fillColor = UIColor.white.cgColor
-        marker.strokeColor = UIColor.systemRed.cgColor
+        let point = cgPoint(current, renderSize: size)
+        let marker = UIBezierPath(ovalIn: CGRect(x: point.x - 9, y: point.y - 9, width: 18, height: 18))
+        UIColor.white.setFill()
+        UIColor.systemRed.setStroke()
         marker.lineWidth = 4
-        layer.addSublayer(marker)
+        marker.fill()
+        marker.stroke()
     }
 
-    private func addVelocitySegments(
-        _ segments: [VelocitySegment],
-        opacity: Double,
-        to layer: CALayer,
-        renderSize: CGSize
-    ) {
+    private func drawVelocitySegments(_ segments: [VelocitySegment], opacity: Double, size: CGSize) {
         for segment in segments {
             let line = UIBezierPath()
-            line.move(to: cgPoint(segment.from, renderSize: renderSize))
-            line.addLine(to: cgPoint(segment.to, renderSize: renderSize))
-
-            let shape = CAShapeLayer()
-            shape.path = line.cgPath
-            shape.strokeColor = color(for: segment.speed).withAlphaComponent(opacity).cgColor
-            shape.fillColor = UIColor.clear.cgColor
-            shape.lineWidth = max(opacity >= 1 ? 6 : 4, renderSize.width * 0.006)
-            shape.lineCap = .round
-            shape.lineJoin = .round
-            layer.addSublayer(shape)
+            line.move(to: cgPoint(segment.from, renderSize: size))
+            line.addLine(to: cgPoint(segment.to, renderSize: size))
+            line.lineWidth = max(opacity >= 1 ? 6 : 4, size.width * 0.006)
+            line.lineCapStyle = .round
+            line.lineJoinStyle = .round
+            color(for: segment.speed).withAlphaComponent(opacity).setStroke()
+            line.stroke()
         }
     }
 
-    private func addWatermark(to layer: CALayer, renderSize: CGSize) {
-        let text = CATextLayer()
-        text.string = "Next Iteration Analysis"
-        text.fontSize = max(18, renderSize.width * 0.028)
-        text.foregroundColor = UIColor.white.cgColor
-        text.backgroundColor = UIColor.black.withAlphaComponent(0.42).cgColor
-        text.alignmentMode = .center
-        text.contentsScale = UIScreen.main.scale
-        text.cornerRadius = 8
-        text.frame = CGRect(x: 16, y: 16, width: min(360, renderSize.width - 32), height: 44)
-        layer.addSublayer(text)
+    private func drawWatermark(size: CGSize) {
+        let rect = CGRect(x: 16, y: 16, width: min(360, size.width - 32), height: 44)
+        let path = UIBezierPath(roundedRect: rect, cornerRadius: 8)
+        UIColor.black.withAlphaComponent(0.42).setFill()
+        path.fill()
+
+        let text = "Next Iteration Analysis"
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.boldSystemFont(ofSize: max(18, size.width * 0.028)),
+            .foregroundColor: UIColor.white
+        ]
+        let textSize = text.size(withAttributes: attributes)
+        text.draw(
+            at: CGPoint(x: rect.midX - textSize.width / 2, y: rect.midY - textSize.height / 2),
+            withAttributes: attributes
+        )
     }
 
     private func cgPoint(_ point: TrackedPoint, renderSize: CGSize) -> CGPoint {
@@ -207,10 +190,6 @@ final class AnnotatedVideoExportService {
         }
     }
 
-    private func transformedSize(_ size: CGSize, transform: CGAffineTransform) -> CGSize {
-        let rect = CGRect(origin: .zero, size: size).applying(transform)
-        return CGSize(width: abs(rect.width), height: abs(rect.height))
-    }
 }
 
 enum ExportError: LocalizedError {

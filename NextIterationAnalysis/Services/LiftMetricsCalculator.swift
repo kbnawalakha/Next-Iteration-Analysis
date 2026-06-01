@@ -49,6 +49,11 @@ final class LiftMetricsCalculator {
     }
 
     func detectReps(path: [TrackedPoint], fallbackReps: Int) -> Int {
+        let bottoms = detectedBottomIndices(path: path, fallbackReps: fallbackReps)
+        if !bottoms.isEmpty {
+            return max(1, min(bottoms.count, 20))
+        }
+
         guard path.count > 8 else { return max(fallbackReps, 1) }
 
         let smoothed = SmoothingUtils.movingAverage(path, window: 3)
@@ -57,33 +62,8 @@ final class LiftMetricsCalculator {
         let range = maxY - minY
         guard range > 0.05 else { return max(fallbackReps, 1) }
 
-        let minimumGap = max(4, smoothed.count / max(fallbackReps * 3, 6))
-        let prominence = range * 0.22
-        var bottoms: [Int] = []
-
-        for index in 1..<(smoothed.count - 1) {
-            let previous = smoothed[index - 1].y
-            let current = smoothed[index].y
-            let next = smoothed[index + 1].y
-            guard current >= previous, current > next, current - min(previous, next) >= prominence * 0.15 else {
-                continue
-            }
-
-            if let last = bottoms.last, index - last < minimumGap {
-                if current > smoothed[last].y {
-                    bottoms[bottoms.count - 1] = index
-                }
-            } else if current - minY >= prominence {
-                bottoms.append(index)
-            }
-        }
-
-        if bottoms.isEmpty {
-            let netTravel = abs((smoothed.first?.y ?? 0) - (smoothed.last?.y ?? 0))
-            return netTravel > range * 0.45 ? 1 : max(fallbackReps, 1)
-        }
-
-        return max(1, min(bottoms.count, 20))
+        let netTravel = abs((smoothed.first?.y ?? 0) - (smoothed.last?.y ?? 0))
+        return netTravel > range * 0.45 ? 1 : max(fallbackReps, 1)
     }
 
     func velocitySegments(for path: [TrackedPoint]) -> [VelocitySegment] {
@@ -99,12 +79,32 @@ final class LiftMetricsCalculator {
     func repSegments(for path: [TrackedPoint], reps: Int) -> [RepPathSegment] {
         guard path.count > 2, reps > 0 else { return [] }
 
+        let bottoms = detectedBottomIndices(path: path, fallbackReps: reps)
+        if bottoms.count >= 1 {
+            return bottoms.enumerated().compactMap { repIndex, bottomIndex in
+                let previousBottom = repIndex > 0 ? bottoms[repIndex - 1] : nil
+                let nextBottom = repIndex < bottoms.count - 1 ? bottoms[repIndex + 1] : nil
+                let start = previousBottom.map { max(0, ($0 + bottomIndex) / 2) } ?? 0
+                let end = nextBottom.map { min(path.count - 1, (bottomIndex + $0) / 2) } ?? (path.count - 1)
+                guard start < end, bottomIndex >= start, bottomIndex <= end else { return nil }
+
+                let repPoints = Array(path[start...end])
+                let opacity: Double = repIndex == bottoms.count - 1 ? 1 : 0.5
+
+                return RepPathSegment(
+                    index: repIndex,
+                    points: repPoints,
+                    bottom: path[bottomIndex],
+                    opacity: opacity
+                )
+            }
+        }
+
         let count = path.count
         return (0..<reps).compactMap { repIndex in
             let start = Int((Double(repIndex) / Double(reps)) * Double(count - 1))
             let end = Int((Double(repIndex + 1) / Double(reps)) * Double(count - 1))
             guard start < end, start < count else { return nil }
-
             let boundedEnd = min(end, count - 1)
             let repPoints = Array(path[start...boundedEnd])
             guard let bottom = repPoints.max(by: { $0.y < $1.y }) else { return nil }
@@ -148,6 +148,45 @@ final class LiftMetricsCalculator {
         let repsInReserve = max(0, 10 - (rpe ?? 8))
         let effectiveReps = Double(reps) + repsInReserve
         return weight * (1 + effectiveReps / 30)
+    }
+
+    private func detectedBottomIndices(path: [TrackedPoint], fallbackReps: Int) -> [Int] {
+        guard path.count > 8 else { return [] }
+
+        let smoothed = SmoothingUtils.movingAverage(path, window: 3)
+        let ys = smoothed.map(\.y)
+        guard let minY = ys.min(), let maxY = ys.max() else { return [] }
+        let range = maxY - minY
+        guard range > 0.05 else { return [] }
+
+        let minimumGap = max(4, smoothed.count / max(fallbackReps * 3, 6))
+        let prominence = range * 0.22
+        var bottoms: [Int] = []
+
+        for index in 1..<(smoothed.count - 1) {
+            let previous = smoothed[index - 1].y
+            let current = smoothed[index].y
+            let next = smoothed[index + 1].y
+            let localDrop = current - min(previous, next)
+            let descent = current - ys[max(0, index - minimumGap)]
+            let ascent = current - ys[min(ys.count - 1, index + minimumGap)]
+            guard current >= previous,
+                  current > next,
+                  current - minY >= prominence,
+                  max(localDrop, min(descent, ascent)) >= prominence * 0.2 else {
+                continue
+            }
+
+            if let last = bottoms.last, index - last < minimumGap {
+                if current > smoothed[last].y {
+                    bottoms[bottoms.count - 1] = index
+                }
+            } else {
+                bottoms.append(index)
+            }
+        }
+
+        return bottoms
     }
 
     private func rawSpeed(from previous: TrackedPoint, to current: TrackedPoint) -> Double {
