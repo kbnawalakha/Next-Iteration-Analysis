@@ -12,6 +12,8 @@ final class LiftMetricsCalculator {
                 averageVelocity: nil,
                 peakVelocity: nil,
                 minimumVelocity: nil,
+                totalDistance: nil,
+                pathEfficiency: nil,
                 pathConsistencyScore: 0,
                 techniqueScore: 0
             )
@@ -24,6 +26,14 @@ final class LiftMetricsCalculator {
         let velocities = zip(path.dropFirst(), path).map { current, previous in
             rawSpeed(from: previous, to: current)
         }
+        let segmentDistances = zip(path.dropFirst(), path).map { current, previous in
+            distance(from: previous, to: current)
+        }
+        let totalDistance = segmentDistances.reduce(0, +)
+        let straightLineDistance = path.first.flatMap { first in
+            path.last.map { distance(from: first, to: $0) }
+        } ?? 0
+        let pathEfficiency = totalDistance > 0 ? min(1, straightLineDistance / totalDistance) : nil
 
         let averageVelocity = velocities.reduce(0, +) / Double(max(velocities.count, 1))
         let peakVelocity = velocities.max() ?? 0
@@ -43,6 +53,8 @@ final class LiftMetricsCalculator {
             averageVelocity: averageVelocity,
             peakVelocity: peakVelocity,
             minimumVelocity: minimumVelocity,
+            totalDistance: totalDistance,
+            pathEfficiency: pathEfficiency,
             pathConsistencyScore: pathConsistency,
             techniqueScore: techniqueScore
         )
@@ -195,9 +207,13 @@ final class LiftMetricsCalculator {
 
     private func rawSpeed(from previous: TrackedPoint, to current: TrackedPoint) -> Double {
         let dt = max(current.timestamp - previous.timestamp, 0.001)
+        return distance(from: previous, to: current) / dt
+    }
+
+    private func distance(from previous: TrackedPoint, to current: TrackedPoint) -> Double {
         let dx = current.x - previous.x
         let dy = current.y - previous.y
-        return sqrt(dx * dx + dy * dy) / dt
+        return sqrt(dx * dx + dy * dy)
     }
 }
 

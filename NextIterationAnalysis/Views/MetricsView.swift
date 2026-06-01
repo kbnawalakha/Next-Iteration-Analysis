@@ -18,6 +18,8 @@ struct MetricsView: View {
                 metric("Horizontal", meter(session.analysis?.metrics.horizontalDisplacement))
                 metric("Avg Speed", speed(session.analysis?.metrics.averageVelocity))
                 metric("Peak Speed", speed(session.analysis?.metrics.peakVelocity))
+                metric("Distance", meter(session.analysis?.metrics.totalDistance))
+                metric("Efficiency", percentFraction(session.analysis?.metrics.pathEfficiency))
                 metric("Path Score", Formatting.percent(session.analysis?.metrics.pathConsistencyScore ?? 0))
                 metric("Technique", Formatting.percent(session.analysis?.metrics.techniqueScore ?? 0))
                 metric("Confidence", Formatting.percent(session.analysis?.confidenceScore ?? 0))
@@ -64,5 +66,10 @@ struct MetricsView: View {
     private func decimal(_ value: Double?) -> String {
         guard let value = value else { return "n/a" }
         return String(format: "%.1f", value)
+    }
+
+    private func percentFraction(_ value: Double?) -> String {
+        guard let value = value else { return "n/a" }
+        return Formatting.percent(value * 100)
     }
 }

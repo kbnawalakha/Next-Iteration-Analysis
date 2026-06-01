@@ -99,6 +99,8 @@ struct LiftMetrics: Codable {
     let averageVelocity: Double?
     let peakVelocity: Double?
     let minimumVelocity: Double?
+    let totalDistance: Double?
+    let pathEfficiency: Double?
     let pathConsistencyScore: Double
     let techniqueScore: Double
 }

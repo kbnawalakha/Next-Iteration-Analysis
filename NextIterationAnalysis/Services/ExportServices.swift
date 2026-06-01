@@ -36,7 +36,11 @@ final class AnnotatedVideoExportService {
         let videoComposition = AVMutableVideoComposition(asset: asset) { request in
             let source = request.sourceImage.clampedToExtent()
             let extent = source.extent
-            let overlay = overlayRenderer.overlayImage(size: extent.size, extent: extent)
+            let overlay = overlayRenderer.overlayImage(
+                size: extent.size,
+                extent: extent,
+                currentTime: request.compositionTime.seconds
+            )
             request.finish(with: overlay.composited(over: source).cropped(to: extent), context: nil)
         }
         videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, Int(round(fps)))))
@@ -95,8 +99,10 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
         self.reps = reps
     }
 
-    func overlayImage(size: CGSize, extent: CGRect) -> CIImage {
-        let cacheKey = "\(Int(size.width))x\(Int(size.height))-\(path.count)-\(reps)"
+    func overlayImage(size: CGSize, extent: CGRect, currentTime: Double? = nil) -> CIImage {
+        let visiblePath = visiblePath(through: currentTime)
+        let cacheFrame = visiblePath.last?.frameIndex ?? -1
+        let cacheKey = "\(Int(size.width))x\(Int(size.height))-\(visiblePath.count)-\(cacheFrame)-\(reps)"
         lock.lock()
         if let cached = overlayCache[cacheKey] {
             lock.unlock()
@@ -108,7 +114,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
         let image = renderer.image { context in
             UIColor.clear.setFill()
             context.fill(CGRect(origin: .zero, size: size))
-            drawVelocityPath(size: size, path: path, reps: reps)
+            drawVelocityPath(size: size, path: visiblePath, reps: reps)
             drawWatermark(size: size)
         }
 
@@ -119,8 +125,18 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
 
         lock.lock()
         overlayCache[cacheKey] = overlay
+        if overlayCache.count > 90 {
+            overlayCache.removeAll(keepingCapacity: true)
+        }
         lock.unlock()
         return overlay.transformed(by: CGAffineTransform(translationX: extent.origin.x, y: extent.origin.y))
+    }
+
+    private func visiblePath(through currentTime: Double?) -> [TrackedPoint] {
+        guard let currentTime else { return path }
+        let visible = path.filter { $0.timestamp <= currentTime }
+        if visible.count > 1 { return visible }
+        return Array(path.prefix(min(path.count, 2)))
     }
 
     private func drawVelocityPath(size: CGSize, path: [TrackedPoint], reps: Int) {
@@ -153,10 +169,11 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
             let line = UIBezierPath()
             line.move(to: cgPoint(segment.from, renderSize: size))
             line.addLine(to: cgPoint(segment.to, renderSize: size))
-            line.lineWidth = max(opacity >= 1 ? 6 : 4, size.width * 0.006)
+            line.lineWidth = max(opacity >= 1 ? 7 : 3.5, size.width * (opacity >= 1 ? 0.007 : 0.004))
             line.lineCapStyle = .round
             line.lineJoinStyle = .round
-            color(for: segment.speed).withAlphaComponent(opacity).setStroke()
+            let strokeColor = opacity >= 1 ? UIColor.white : UIColor.systemGray
+            strokeColor.withAlphaComponent(opacity).setStroke()
             line.stroke()
         }
     }
@@ -181,14 +198,6 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
 
     private func cgPoint(_ point: TrackedPoint, renderSize: CGSize) -> CGPoint {
         CGPoint(x: point.x * renderSize.width, y: point.y * renderSize.height)
-    }
-
-    private func color(for normalizedSpeed: Double) -> UIColor {
-        switch normalizedSpeed {
-        case 0..<0.34: return .systemRed
-        case 0.34..<0.67: return .systemYellow
-        default: return .systemGreen
-        }
     }
 
 }

@@ -19,6 +19,9 @@ final class LiftMetricsCalculatorTests: XCTestCase {
         XCTAssertEqual(metrics.horizontalDisplacement ?? 0, 0.04, accuracy: 0.0001)
         XCTAssertGreaterThan(metrics.averageVelocity ?? 0, 0)
         XCTAssertGreaterThan(metrics.peakVelocity ?? 0, metrics.minimumVelocity ?? 0)
+        XCTAssertGreaterThan(metrics.totalDistance ?? 0, metrics.verticalDisplacement ?? 0)
+        XCTAssertGreaterThan(metrics.pathEfficiency ?? 0, 0)
+        XCTAssertLessThanOrEqual(metrics.pathEfficiency ?? 1, 1)
         XCTAssertEqual(metrics.pathConsistencyScore, 78, accuracy: 0.0001)
     }
 
@@ -27,6 +30,8 @@ final class LiftMetricsCalculatorTests: XCTestCase {
 
         XCTAssertNil(metrics.verticalDisplacement)
         XCTAssertNil(metrics.horizontalDisplacement)
+        XCTAssertNil(metrics.totalDistance)
+        XCTAssertNil(metrics.pathEfficiency)
         XCTAssertEqual(metrics.pathConsistencyScore, 0)
         XCTAssertEqual(metrics.techniqueScore, 0)
     }

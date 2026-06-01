@@ -15,6 +15,8 @@ final class WeightRecommendationServiceTests: XCTestCase {
             averageVelocity: 0.4,
             peakVelocity: 0.7,
             minimumVelocity: 0.3,
+            totalDistance: 0.55,
+            pathEfficiency: 0.9,
             pathConsistencyScore: 92,
             techniqueScore: 88
         )
@@ -36,6 +38,8 @@ final class WeightRecommendationServiceTests: XCTestCase {
             averageVelocity: 0.3,
             peakVelocity: 0.5,
             minimumVelocity: 0.2,
+            totalDistance: 0.52,
+            pathEfficiency: 0.75,
             pathConsistencyScore: 76,
             techniqueScore: 74
         )
@@ -57,6 +61,8 @@ final class WeightRecommendationServiceTests: XCTestCase {
             averageVelocity: 0.2,
             peakVelocity: 0.4,
             minimumVelocity: 0.08,
+            totalDistance: 0.72,
+            pathEfficiency: 0.6,
             pathConsistencyScore: 52,
             techniqueScore: 60
         )

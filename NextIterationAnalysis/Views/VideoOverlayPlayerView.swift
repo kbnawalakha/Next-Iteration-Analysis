@@ -3,6 +3,9 @@ import SwiftUI
 
 struct VideoOverlayPlayerView: View {
     let session: LiftSession
+    @State private var player: AVPlayer?
+    @State private var playbackTime = 0.0
+    @State private var timeObserver: Any?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -10,8 +13,8 @@ struct VideoOverlayPlayerView: View {
                 .font(.headline)
 
             ZStack {
-                if let videoURL = session.videoURL {
-                    VideoPlayer(player: AVPlayer(url: videoURL))
+                if session.videoURL != nil {
+                    VideoPlayer(player: player)
                 } else {
                     Rectangle()
                         .fill(Color.secondary.opacity(0.12))
@@ -26,7 +29,11 @@ struct VideoOverlayPlayerView: View {
                         }
                 }
 
-                VelocityBarPathOverlay(path: session.analysis?.trackedPath ?? [], reps: session.reps)
+                VelocityBarPathOverlay(
+                    path: session.analysis?.trackedPath ?? [],
+                    reps: session.reps,
+                    currentTime: playbackTime
+                )
                     .allowsHitTesting(false)
             }
             .aspectRatio(session.videoAspectRatio ?? 16 / 9, contentMode: .fit)
@@ -40,24 +47,49 @@ struct VideoOverlayPlayerView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
+        .onAppear(perform: configurePlayer)
+        .onDisappear(perform: tearDownPlayer)
+    }
+
+    private func configurePlayer() {
+        guard player == nil, let videoURL = session.videoURL else { return }
+        let newPlayer = AVPlayer(url: videoURL)
+        let observer = newPlayer.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            playbackTime = time.seconds.isFinite ? time.seconds : 0
+        }
+        player = newPlayer
+        timeObserver = observer
+    }
+
+    private func tearDownPlayer() {
+        if let timeObserver {
+            player?.removeTimeObserver(timeObserver)
+        }
+        timeObserver = nil
+        player = nil
     }
 }
 
 struct VelocityBarPathOverlay: View {
     let path: [TrackedPoint]
     var reps: Int = 1
+    var currentTime: Double?
     private let calculator = LiftMetricsCalculator()
 
     var body: some View {
         GeometryReader { proxy in
             Canvas { context, size in
-                let repSegments = calculator.repSegments(for: path, reps: reps)
-                let velocityByFrame = Dictionary(uniqueKeysWithValues: calculator.velocitySegments(for: path).map {
+                let visiblePath = visiblePath()
+                let repSegments = calculator.repSegments(for: visiblePath, reps: reps)
+                let velocityByFrame = Dictionary(uniqueKeysWithValues: calculator.velocitySegments(for: visiblePath).map {
                     ($0.to.frameIndex, $0.speed)
                 })
 
                 if repSegments.isEmpty {
-                    drawVelocitySegments(calculator.velocitySegments(for: path), opacity: 1, context: &context, size: size)
+                    drawVelocitySegments(calculator.velocitySegments(for: visiblePath), opacity: 1, context: &context, size: size)
                 } else {
                     for rep in repSegments {
                         let segments = calculator.velocitySegments(for: rep.points).map { segment in
@@ -78,7 +110,7 @@ struct VelocityBarPathOverlay: View {
                     }
                 }
 
-                if let current = path.last {
+                if let current = visiblePath.last {
                     context.fill(
                         Path(ellipseIn: CGRect(
                             x: point(current, in: size).x - 6,
@@ -94,6 +126,13 @@ struct VelocityBarPathOverlay: View {
         }
     }
 
+    private func visiblePath() -> [TrackedPoint] {
+        guard let currentTime else { return path }
+        let visible = path.filter { $0.timestamp <= currentTime }
+        if visible.count > 1 { return visible }
+        return Array(path.prefix(min(path.count, 2)))
+    }
+
     private func drawVelocitySegments(
         _ segments: [VelocitySegment],
         opacity: Double,
@@ -106,8 +145,8 @@ struct VelocityBarPathOverlay: View {
             segmentPath.addLine(to: point(segment.to, in: size))
             context.stroke(
                 segmentPath,
-                with: .color(color(for: segment.speed).opacity(opacity)),
-                style: StrokeStyle(lineWidth: opacity >= 1 ? 5 : 3, lineCap: .round, lineJoin: .round)
+                with: .color((opacity >= 1 ? Color.white : Color.gray).opacity(opacity)),
+                style: StrokeStyle(lineWidth: opacity >= 1 ? 6 : 3, lineCap: .round, lineJoin: .round)
             )
         }
     }
@@ -116,11 +155,4 @@ struct VelocityBarPathOverlay: View {
         CGPoint(x: trackedPoint.x * size.width, y: trackedPoint.y * size.height)
     }
 
-    private func color(for speed: Double) -> Color {
-        switch speed {
-        case 0..<0.34: return .red
-        case 0.34..<0.67: return .yellow
-        default: return .green
-        }
-    }
 }

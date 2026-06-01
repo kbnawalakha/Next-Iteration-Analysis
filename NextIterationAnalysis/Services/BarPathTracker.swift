@@ -242,8 +242,15 @@ final class BarPathTracker {
                 around: predictedPoint,
                 searchRadius: searchRadius
             )
+            let refitMatch = circleRefitMatch(
+                in: luminance,
+                predictedPoint: predictedPoint,
+                previousPoint: previousPoint,
+                searchRadius: searchRadius
+            )
+            let trackingMatch = bestRecoverableMatch(localMatch, refitMatch: refitMatch, confidenceGate: confidenceGate)
 
-            guard let match = localMatch, match.confidence >= confidenceGate else {
+            guard let match = trackingMatch else {
                 missedFrames += 1
                 previousPoint = clamped(interpolatedPoint(
                     previous: previousPoint,
@@ -344,6 +351,36 @@ final class BarPathTracker {
             x: previous.x * (1 - blendWeight) + predicted.x * blendWeight,
             y: previous.y * (1 - blendWeight) + predicted.y * blendWeight
         )
+    }
+
+    private func circleRefitMatch(
+        in luminance: LuminanceFrame,
+        predictedPoint: NormalizedPoint,
+        previousPoint: NormalizedPoint,
+        searchRadius: Int
+    ) -> (point: NormalizedPoint, confidence: Double)? {
+        guard let refit = luminance.refinedPlateCenter(near: predictedPoint) else { return nil }
+        let pixelDistance = distance(from: refit, to: previousPoint) * Double(max(luminance.width, luminance.height))
+        guard pixelDistance <= Double(searchRadius) else { return nil }
+        return (refit, 0.66)
+    }
+
+    private func bestRecoverableMatch(
+        _ localMatch: (point: NormalizedPoint, confidence: Double)?,
+        refitMatch: (point: NormalizedPoint, confidence: Double)?,
+        confidenceGate: Double
+    ) -> (point: NormalizedPoint, confidence: Double)? {
+        let gatedLocal = (localMatch?.confidence ?? 0) >= confidenceGate ? localMatch : nil
+        switch (gatedLocal, refitMatch) {
+        case let (local?, refit?) where refit.confidence > local.confidence:
+            return refit
+        case let (local?, _):
+            return local
+        case let (nil, refit?):
+            return refit
+        default:
+            return nil
+        }
     }
 
     private func blend(_ template: [UInt8], with freshPatch: [UInt8], newWeight: Double) -> [UInt8] {

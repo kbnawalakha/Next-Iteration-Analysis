@@ -27,6 +27,8 @@ enum SampleData {
                     averageVelocity: 0.42,
                     peakVelocity: 0.71,
                     minimumVelocity: 0.22,
+                    totalDistance: 0.78,
+                    pathEfficiency: 0.82,
                     pathConsistencyScore: 82,
                     techniqueScore: 84
                 ),
