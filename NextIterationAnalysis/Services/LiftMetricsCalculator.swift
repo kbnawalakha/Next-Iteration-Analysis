@@ -52,6 +52,35 @@ final class LiftMetricsCalculator {
         let maxSpeed = raw.map(\.speed).max() ?? 1
         return raw.map { VelocitySegment(from: $0.from, to: $0.to, speed: $0.speed / maxSpeed) }
     }
+
+    func repSegments(for path: [TrackedPoint], reps: Int) -> [RepPathSegment] {
+        guard path.count > 2, reps > 0 else { return [] }
+
+        let count = path.count
+        return (0..<reps).compactMap { repIndex in
+            let start = Int((Double(repIndex) / Double(reps)) * Double(count - 1))
+            let end = Int((Double(repIndex + 1) / Double(reps)) * Double(count - 1))
+            guard start < end, start < count else { return nil }
+
+            let boundedEnd = min(end, count - 1)
+            let repPoints = Array(path[start...boundedEnd])
+            guard let bottom = repPoints.max(by: { $0.y < $1.y }) else { return nil }
+
+            let opacity: Double
+            if repIndex == reps - 1 {
+                opacity = 1
+            } else {
+                opacity = 0.5
+            }
+
+            return RepPathSegment(
+                index: repIndex,
+                points: repPoints,
+                bottom: bottom,
+                opacity: opacity
+            )
+        }
+    }
 }
 
 struct VelocitySegment: Identifiable {
@@ -59,4 +88,12 @@ struct VelocitySegment: Identifiable {
     let from: TrackedPoint
     let to: TrackedPoint
     let speed: Double
+}
+
+struct RepPathSegment: Identifiable {
+    let id = UUID()
+    let index: Int
+    let points: [TrackedPoint]
+    let bottom: TrackedPoint
+    let opacity: Double
 }

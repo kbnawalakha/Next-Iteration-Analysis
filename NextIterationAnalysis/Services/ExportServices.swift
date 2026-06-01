@@ -8,7 +8,7 @@ final class CSVExportService {
 
     func export(session: LiftSession) throws -> URL {
         guard let analysis = session.analysis else { throw ExportError.missingAnalysis }
-        var rows = ["frameIndex,timestamp,x,y,confidence"]
+        var rows = ["frameIndex,timestamp,centerX,centerY,confidence"]
         rows.append(contentsOf: analysis.trackedPath.map {
             "\($0.frameIndex),\($0.timestamp),\($0.x),\($0.y),\($0.confidence)"
         })
@@ -72,7 +72,7 @@ final class AnnotatedVideoExportService {
         videoComposition.instructions = [instruction]
         videoComposition.renderSize = renderSize
         videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-        videoComposition.animationTool = animationTool(renderSize: renderSize, path: analysis.trackedPath)
+        videoComposition.animationTool = animationTool(renderSize: renderSize, path: analysis.trackedPath, reps: session.reps)
 
         let destination = try storage.makeExportURL(fileName: "\(session.liftType.rawValue)-annotated-\(session.id.uuidString.prefix(8)).mp4")
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -106,7 +106,7 @@ final class AnnotatedVideoExportService {
         return destination
     }
 
-    private func animationTool(renderSize: CGSize, path: [TrackedPoint]) -> AVVideoCompositionCoreAnimationTool {
+    private func animationTool(renderSize: CGSize, path: [TrackedPoint], reps: Int) -> AVVideoCompositionCoreAnimationTool {
         let parentLayer = CALayer()
         let videoLayer = CALayer()
         let overlayLayer = CALayer()
@@ -117,7 +117,7 @@ final class AnnotatedVideoExportService {
         parentLayer.addSublayer(videoLayer)
         parentLayer.addSublayer(overlayLayer)
 
-        addVelocityPath(to: overlayLayer, renderSize: renderSize, path: path)
+        addVelocityPath(to: overlayLayer, renderSize: renderSize, path: path, reps: reps)
         addWatermark(to: overlayLayer, renderSize: renderSize)
 
         return AVVideoCompositionCoreAnimationTool(
@@ -126,21 +126,26 @@ final class AnnotatedVideoExportService {
         )
     }
 
-    private func addVelocityPath(to layer: CALayer, renderSize: CGSize, path: [TrackedPoint]) {
-        let segments = metricsCalculator.velocitySegments(for: path)
-        for segment in segments {
-            let line = UIBezierPath()
-            line.move(to: cgPoint(segment.from, renderSize: renderSize))
-            line.addLine(to: cgPoint(segment.to, renderSize: renderSize))
-
-            let shape = CAShapeLayer()
-            shape.path = line.cgPath
-            shape.strokeColor = color(for: segment.speed).cgColor
-            shape.fillColor = UIColor.clear.cgColor
-            shape.lineWidth = max(5, renderSize.width * 0.006)
-            shape.lineCap = .round
-            shape.lineJoin = .round
-            layer.addSublayer(shape)
+    private func addVelocityPath(to layer: CALayer, renderSize: CGSize, path: [TrackedPoint], reps: Int) {
+        let repSegments = metricsCalculator.repSegments(for: path, reps: reps)
+        if repSegments.isEmpty {
+            addVelocitySegments(metricsCalculator.velocitySegments(for: path), opacity: 1, to: layer, renderSize: renderSize)
+        } else {
+            for rep in repSegments {
+                addVelocitySegments(
+                    metricsCalculator.velocitySegments(for: rep.points),
+                    opacity: rep.opacity,
+                    to: layer,
+                    renderSize: renderSize
+                )
+                let bottom = cgPoint(rep.bottom, renderSize: renderSize)
+                let bottomMarker = CAShapeLayer()
+                bottomMarker.path = UIBezierPath(ovalIn: CGRect(x: bottom.x - 9, y: bottom.y - 9, width: 18, height: 18)).cgPath
+                bottomMarker.fillColor = UIColor.clear.cgColor
+                bottomMarker.strokeColor = UIColor.white.withAlphaComponent(rep.opacity).cgColor
+                bottomMarker.lineWidth = 3
+                layer.addSublayer(bottomMarker)
+            }
         }
 
         guard let current = path.last else { return }
@@ -153,6 +158,28 @@ final class AnnotatedVideoExportService {
         marker.strokeColor = UIColor.systemRed.cgColor
         marker.lineWidth = 4
         layer.addSublayer(marker)
+    }
+
+    private func addVelocitySegments(
+        _ segments: [VelocitySegment],
+        opacity: Double,
+        to layer: CALayer,
+        renderSize: CGSize
+    ) {
+        for segment in segments {
+            let line = UIBezierPath()
+            line.move(to: cgPoint(segment.from, renderSize: renderSize))
+            line.addLine(to: cgPoint(segment.to, renderSize: renderSize))
+
+            let shape = CAShapeLayer()
+            shape.path = line.cgPath
+            shape.strokeColor = color(for: segment.speed).withAlphaComponent(opacity).cgColor
+            shape.fillColor = UIColor.clear.cgColor
+            shape.lineWidth = max(opacity >= 1 ? 6 : 4, renderSize.width * 0.006)
+            shape.lineCap = .round
+            shape.lineJoin = .round
+            layer.addSublayer(shape)
+        }
     }
 
     private func addWatermark(to layer: CALayer, renderSize: CGSize) {

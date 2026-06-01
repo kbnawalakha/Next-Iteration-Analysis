@@ -10,7 +10,7 @@ struct VideoFrame {
 }
 
 final class VideoFrameExtractor {
-    func extractFrames(from url: URL, maxFrames: Int = 180) async throws -> [VideoFrame] {
+    func extractFrames(from url: URL, maxFrames: Int = 120) async throws -> [VideoFrame] {
         try await Task.detached(priority: .userInitiated) {
             let asset = AVURLAsset(url: url)
             let duration = try await asset.load(.duration).seconds
@@ -22,8 +22,9 @@ final class VideoFrameExtractor {
             let frameCount = min(maxFrames, naturalFrameCount)
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
-            generator.requestedTimeToleranceBefore = .zero
-            generator.requestedTimeToleranceAfter = .zero
+            generator.maximumSize = CGSize(width: 640, height: 640)
+            generator.requestedTimeToleranceBefore = CMTime(seconds: 0.05, preferredTimescale: 600)
+            generator.requestedTimeToleranceAfter = CMTime(seconds: 0.05, preferredTimescale: 600)
 
             return (0..<frameCount).compactMap { index in
                 let progress = Double(index) / Double(max(frameCount - 1, 1))
@@ -46,7 +47,20 @@ final class VideoFrameExtractor {
     }
 
     func firstFrame(from url: URL) async throws -> VideoFrame? {
-        try await extractFrames(from: url, maxFrames: 1).first
+        try await Task.detached(priority: .userInitiated) {
+            let asset = AVURLAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 900, height: 900)
+
+            var actualTime = CMTime.zero
+            let image = try generator.copyCGImage(at: .zero, actualTime: &actualTime)
+            return VideoFrame(
+                timestamp: actualTime.seconds.isFinite ? actualTime.seconds : 0,
+                frameIndex: 0,
+                image: image
+            )
+        }.value
     }
 
     func imageFromFile(_ url: URL) -> CGImage? {
@@ -161,11 +175,35 @@ struct LuminanceFrame {
         }
 
         guard let bestPoint = bestPoint, bestScore > 0.12 else { return nil }
+        let center = refinedPlateCenter(near: bestPoint) ?? bestPoint
         return PlateDetectionResult(
-            point: bestPoint,
+            point: center,
             confidence: max(0.2, min(0.88, bestScore)),
-            explanation: "Automatic detection selected the strongest round high-contrast candidate in the first frame. Tap to correct if it chose the wrong plate."
+            explanation: "Automatic detection selected the strongest round high-contrast plate candidate and fitted its center. Drag to correct if it chose the wrong plate."
         )
+    }
+
+    func refinedPlateCenter(near point: NormalizedPoint) -> NormalizedPoint? {
+        let approximateRadius = max(7, min(width, height) / 22)
+        let centerX = Int(point.x * Double(width))
+        let centerY = Int(point.y * Double(height))
+        let searchRadius = max(6, approximateRadius / 2)
+
+        var bestScore = 0.0
+        var bestPoint: NormalizedPoint?
+
+        for y in stride(from: centerY - searchRadius, through: centerY + searchRadius, by: 2) {
+            for x in stride(from: centerX - searchRadius, through: centerX + searchRadius, by: 2) {
+                let score = circularContrastScore(centerX: x, centerY: y, radius: approximateRadius)
+                if score > bestScore {
+                    bestScore = score
+                    bestPoint = NormalizedPoint(x: Double(x) / Double(width), y: Double(y) / Double(height))
+                }
+            }
+        }
+
+        guard bestScore > 0.1 else { return nil }
+        return bestPoint
     }
 
     private func meanAbsoluteDifference(template: [UInt8], centerX: Int, centerY: Int, radius: Int) -> Double {

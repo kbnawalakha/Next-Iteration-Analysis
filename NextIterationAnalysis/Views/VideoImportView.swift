@@ -14,7 +14,7 @@ struct VideoImportView: View {
                 ) {
                     Label("Upload Lift Video", systemImage: "photo.on.rectangle.angled")
                 }
-                .onChange(of: viewModel.selectedItem) { _ in
+                .onChange(of: viewModel.selectedItem) { _, _ in
                     Task { await viewModel.importSelectedVideo() }
                 }
 

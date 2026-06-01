@@ -4,14 +4,12 @@ import UIKit
 import Vision
 
 enum TrackingMode: String, CaseIterable, Identifiable {
-    case manual
     case automaticPlateDetection
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .manual: return "Manual"
         case .automaticPlateDetection: return "Auto Plate"
         }
     }
@@ -26,6 +24,15 @@ struct PlateDetectionResult {
     let point: NormalizedPoint
     let confidence: Double
     let explanation: String
+
+    var confidenceLabel: String {
+        switch confidence {
+        case 0.9...1.0: return "Excellent"
+        case 0.75..<0.9: return "Good"
+        case 0.6..<0.75: return "Moderate"
+        default: return "Low"
+        }
+    }
 }
 
 final class AutomaticPlateDetectionService {
@@ -47,7 +54,7 @@ final class AutomaticPlateDetectionService {
         return PlateDetectionResult(
             point: NormalizedPoint(x: 0.68, y: 0.46),
             confidence: 0.22,
-            explanation: "Automatic detection could not confidently identify a plate. A fallback point was selected; tap the frame to correct it."
+            explanation: "Automatic detection could not confidently identify a plate center. A fallback center was selected; drag the marker to correct it."
         )
     }
 
@@ -88,7 +95,7 @@ final class AutomaticPlateDetectionService {
                 y: Double(1 - box.midY)
             ),
             confidence: Double(candidate.confidence),
-            explanation: "Automatic detection used the bundled PlateBarbellDetector Core ML model. Tap to correct if needed."
+            explanation: "Automatic detection used the bundled PlateBarbellDetector Core ML model and selected the plate center. Drag to correct if needed."
         )
     }
 }
@@ -103,9 +110,9 @@ final class BarPathTracker {
         mode: TrackingMode
     ) async -> [TrackedPoint] {
         if let videoURL = videoURL,
-           let trackedPoints = try? await trackWithTemplateMatching(videoURL: videoURL, startingPoint: startingPoint, mode: mode),
+           let trackedPoints = try? await trackWithTemplateMatching(videoURL: videoURL, startingPoint: startingPoint),
            trackedPoints.count > 2 {
-            return SmoothingUtils.movingAverage(trackedPoints)
+            return SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints))
         }
 
         return simulatedPath(startingPoint: startingPoint, reps: reps, mode: mode)
@@ -113,33 +120,37 @@ final class BarPathTracker {
 
     private func trackWithTemplateMatching(
         videoURL: URL,
-        startingPoint: NormalizedPoint,
-        mode: TrackingMode
+        startingPoint: NormalizedPoint
     ) async throws -> [TrackedPoint] {
-        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 180)
+        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 120)
         guard let firstFrame = frames.first,
               let firstLuminance = LuminanceFrame(image: firstFrame.image) else {
             return []
         }
 
-        let patchRadius = max(4, min(firstLuminance.width, firstLuminance.height) / 42)
-        guard let template = firstLuminance.patch(center: startingPoint, radius: patchRadius) else {
+        let initialCenter = firstLuminance.refinedPlateCenter(near: startingPoint) ?? startingPoint
+        let patchRadius = max(5, min(firstLuminance.width, firstLuminance.height) / 34)
+        guard let template = firstLuminance.patch(center: initialCenter, radius: patchRadius) else {
             return []
         }
 
-        var previousPoint = startingPoint
+        var previousPoint = initialCenter
         let searchRadius = max(10, min(firstLuminance.width, firstLuminance.height) / 11)
-        let confidencePenalty = mode == .manual ? 0.0 : 0.08
 
         return frames.compactMap { frame in
             guard let luminance = LuminanceFrame(image: frame.image),
-                  let match = luminance.bestMatch(
+                  var match = luminance.bestMatch(
                     template: template,
                     radius: patchRadius,
                     around: previousPoint,
                     searchRadius: searchRadius
                   ) else {
                 return nil
+            }
+
+            if let refinedCenter = luminance.refinedPlateCenter(near: match.point) {
+                match.point = refinedCenter
+                match.confidence = min(0.98, match.confidence + 0.06)
             }
 
             previousPoint = match.point
@@ -149,7 +160,7 @@ final class BarPathTracker {
                 frameIndex: frame.frameIndex,
                 x: match.point.x,
                 y: match.point.y,
-                confidence: max(0.05, match.confidence - confidencePenalty)
+                confidence: max(0.05, match.confidence)
             )
         }
     }
@@ -157,7 +168,7 @@ final class BarPathTracker {
     private func simulatedPath(startingPoint: NormalizedPoint, reps: Int, mode: TrackingMode) -> [TrackedPoint] {
         let frameCount = max(90, reps * 42)
         let cycles = Double(max(reps, 1))
-        let confidenceBase = mode == .manual ? 0.82 : 0.64
+        let confidenceBase = 0.64
 
         let rawPoints = (0..<frameCount).map { index in
             let progress = Double(index) / Double(frameCount - 1)

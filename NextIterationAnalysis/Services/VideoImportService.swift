@@ -67,13 +67,17 @@ final class VideoImportService {
         }
 
         let naturalSize = try await track.load(.naturalSize)
+        let preferredTransform = try await track.load(.preferredTransform)
+        let displaySize = Self.transformedSize(naturalSize, transform: preferredTransform)
         let fps = try await track.load(.nominalFrameRate)
-        let resolution = "\(Int(abs(naturalSize.width))) x \(Int(abs(naturalSize.height)))"
+        let resolution = "\(Int(displaySize.width)) x \(Int(displaySize.height))"
 
         return VideoMetadata(
             duration: duration.isFinite ? duration : 0,
             fps: fps.isFinite ? Double(fps) : 0,
             resolution: resolution,
+            width: Double(displaySize.width),
+            height: Double(displaySize.height),
             creationDate: nil
         )
     }
@@ -82,6 +86,7 @@ final class VideoImportService {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 900, height: 900)
         let cgImage = try generator.copyCGImage(at: .zero, actualTime: nil)
         let data = try Self.jpegData(from: cgImage, maxDimension: 900)
         let destination = try storage.makeExportURL(fileName: "\(UUID().uuidString)-thumbnail.jpg")
@@ -104,6 +109,11 @@ final class VideoImportService {
             throw VideoImportError.thumbnailGenerationFailed
         }
         return data
+    }
+
+    private static func transformedSize(_ size: CGSize, transform: CGAffineTransform) -> CGSize {
+        let rect = CGRect(origin: .zero, size: size).applying(transform)
+        return CGSize(width: abs(rect.width), height: abs(rect.height))
     }
 }
 

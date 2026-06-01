@@ -55,15 +55,6 @@ final class TechniqueRuleEngine {
             focus.append("Consistent setup")
         }
 
-        if trackingMode == .automaticPlateDetection {
-            issues.append(issue(
-                "Auto detection confidence",
-                .low,
-                "Automatic plate detection is in MVP mode and may need manual correction.",
-                "Review the selected start point before trusting the numbers."
-            ))
-        }
-
         let summary = issues.isEmpty
             ? "This set looked controlled from the available tracking data."
             : "The lift is analyzable, with the main opportunity around bar path consistency."

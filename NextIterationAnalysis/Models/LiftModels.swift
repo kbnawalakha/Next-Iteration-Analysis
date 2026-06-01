@@ -43,6 +43,7 @@ struct LiftSession: Codable, Identifiable {
     let createdAt: Date
     let videoURL: URL?
     let thumbnailURL: URL?
+    let videoAspectRatio: Double?
     let liftType: LiftType
     let weight: Double
     let unit: WeightUnit
@@ -134,7 +135,23 @@ struct VideoMetadata: Codable {
     let duration: Double
     let fps: Double
     let resolution: String
+    let width: Double?
+    let height: Double?
     let creationDate: Date?
+
+    var aspectRatio: Double? {
+        if let width, let height, height > 0 {
+            return width / height
+        }
+
+        let parts = resolution
+            .replacingOccurrences(of: " ", with: "")
+            .split(separator: "x")
+            .compactMap { Double($0) }
+
+        guard parts.count == 2, parts[1] > 0 else { return nil }
+        return parts[0] / parts[1]
+    }
 }
 
 struct ImportedLiftVideo {

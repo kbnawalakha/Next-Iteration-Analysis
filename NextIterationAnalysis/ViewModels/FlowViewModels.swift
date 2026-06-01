@@ -121,6 +121,7 @@ final class AnalysisViewModel: ObservableObject {
                 createdAt: .now,
                 videoURL: importedVideo?.videoURL,
                 thumbnailURL: importedVideo?.thumbnailURL,
+                videoAspectRatio: importedVideo?.metadata.aspectRatio,
                 liftType: details.liftType,
                 weight: details.weight,
                 unit: details.unit,
@@ -171,16 +172,30 @@ final class AnalysisViewModel: ObservableObject {
 
 @MainActor
 final class PointSelectionViewModel: ObservableObject {
-    @Published var trackingMode: TrackingMode = .manual
+    @Published var trackingMode: TrackingMode = .automaticPlateDetection
     @Published var selectedPoint = NormalizedPoint(x: 0.5, y: 0.5)
     @Published var autoDetectionMessage: String?
+    @Published var confidenceLabel: String = "Low"
+    @Published var confidence: Double = 0
+    @Published var isDetecting = false
 
     private let detector = AutomaticPlateDetectionService()
 
     func autoDetect(video: ImportedLiftVideo?) async {
+        isDetecting = true
+        defer { isDetecting = false }
         trackingMode = .automaticPlateDetection
         let result = await detector.detectPlateStartPoint(videoURL: video?.videoURL, thumbnailURL: video?.thumbnailURL)
         selectedPoint = result.point
-        autoDetectionMessage = "\(result.explanation) Confidence \(Formatting.percent(result.confidence * 100))."
+        confidence = result.confidence
+        confidenceLabel = result.confidenceLabel
+        autoDetectionMessage = "\(result.explanation) Confidence \(result.confidenceLabel) (\(Formatting.percent(result.confidence * 100)))."
+    }
+
+    func markManuallyAdjusted() {
+        trackingMode = .automaticPlateDetection
+        confidence = min(confidence, 0.74)
+        confidenceLabel = confidence > 0 ? "Manual Adjust" : "Adjusted"
+        autoDetectionMessage = "Plate center adjusted. The tracker will follow this center point across the lift."
     }
 }

@@ -21,4 +21,37 @@ enum SmoothingUtils {
             )
         }
     }
+
+    static func kalmanSmooth(_ points: [TrackedPoint]) -> [TrackedPoint] {
+        guard points.count > 2 else { return points }
+
+        var estimateX = points[0].x
+        var estimateY = points[0].y
+        var errorX = 1.0
+        var errorY = 1.0
+        let processNoise = 0.002
+        let measurementNoise = 0.018
+
+        return points.map { point in
+            errorX += processNoise
+            errorY += processNoise
+
+            let gainX = errorX / (errorX + measurementNoise)
+            let gainY = errorY / (errorY + measurementNoise)
+
+            estimateX += gainX * (point.x - estimateX)
+            estimateY += gainY * (point.y - estimateY)
+            errorX *= 1 - gainX
+            errorY *= 1 - gainY
+
+            return TrackedPoint(
+                id: point.id,
+                timestamp: point.timestamp,
+                frameIndex: point.frameIndex,
+                x: estimateX,
+                y: estimateY,
+                confidence: point.confidence
+            )
+        }
+    }
 }

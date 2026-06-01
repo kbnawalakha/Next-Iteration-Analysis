@@ -43,7 +43,7 @@ struct LiftDetailsView: View {
             }
 
             Section {
-                NavigationLink("Choose Tracking Point") {
+                NavigationLink("Confirm Plate Center") {
                     PointSelectionView(importedVideo: importedVideo, details: viewModel.details)
                 }
                 .disabled(!viewModel.canAnalyze)

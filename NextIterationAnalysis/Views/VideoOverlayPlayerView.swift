@@ -26,10 +26,10 @@ struct VideoOverlayPlayerView: View {
                         }
                 }
 
-                VelocityBarPathOverlay(path: session.analysis?.trackedPath ?? [])
+                VelocityBarPathOverlay(path: session.analysis?.trackedPath ?? [], reps: session.reps)
                     .allowsHitTesting(false)
             }
-            .aspectRatio(16 / 9, contentMode: .fit)
+            .aspectRatio(session.videoAspectRatio ?? 16 / 9, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             HStack {
@@ -45,17 +45,37 @@ struct VideoOverlayPlayerView: View {
 
 struct VelocityBarPathOverlay: View {
     let path: [TrackedPoint]
+    var reps: Int = 1
     private let calculator = LiftMetricsCalculator()
 
     var body: some View {
         GeometryReader { proxy in
             Canvas { context, size in
-                let segments = calculator.velocitySegments(for: path)
-                for segment in segments {
-                    var segmentPath = Path()
-                    segmentPath.move(to: point(segment.from, in: size))
-                    segmentPath.addLine(to: point(segment.to, in: size))
-                    context.stroke(segmentPath, with: .color(color(for: segment.speed)), lineWidth: 4)
+                let repSegments = calculator.repSegments(for: path, reps: reps)
+                let velocityByFrame = Dictionary(uniqueKeysWithValues: calculator.velocitySegments(for: path).map {
+                    ($0.to.frameIndex, $0.speed)
+                })
+
+                if repSegments.isEmpty {
+                    drawVelocitySegments(calculator.velocitySegments(for: path), opacity: 1, context: &context, size: size)
+                } else {
+                    for rep in repSegments {
+                        let segments = calculator.velocitySegments(for: rep.points).map { segment in
+                            VelocitySegment(
+                                from: segment.from,
+                                to: segment.to,
+                                speed: velocityByFrame[segment.to.frameIndex] ?? segment.speed
+                            )
+                        }
+                        drawVelocitySegments(segments, opacity: rep.opacity, context: &context, size: size)
+
+                        let bottomPoint = point(rep.bottom, in: size)
+                        context.stroke(
+                            Path(ellipseIn: CGRect(x: bottomPoint.x - 7, y: bottomPoint.y - 7, width: 14, height: 14)),
+                            with: .color(.white.opacity(rep.opacity)),
+                            lineWidth: 2
+                        )
+                    }
                 }
 
                 if let current = path.last {
@@ -71,6 +91,24 @@ struct VelocityBarPathOverlay: View {
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+
+    private func drawVelocitySegments(
+        _ segments: [VelocitySegment],
+        opacity: Double,
+        context: inout GraphicsContext,
+        size: CGSize
+    ) {
+        for segment in segments {
+            var segmentPath = Path()
+            segmentPath.move(to: point(segment.from, in: size))
+            segmentPath.addLine(to: point(segment.to, in: size))
+            context.stroke(
+                segmentPath,
+                with: .color(color(for: segment.speed).opacity(opacity)),
+                style: StrokeStyle(lineWidth: opacity >= 1 ? 5 : 3, lineCap: .round, lineJoin: .round)
+            )
         }
     }
 

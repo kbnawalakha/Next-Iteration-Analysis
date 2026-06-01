@@ -44,7 +44,7 @@ struct SideBySideComparisonView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            VelocityBarPathOverlay(path: session?.analysis?.trackedPath ?? [])
+            VelocityBarPathOverlay(path: session?.analysis?.trackedPath ?? [], reps: session?.reps ?? 1)
                 .frame(height: 130)
                 .background(Color.secondary.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 8))

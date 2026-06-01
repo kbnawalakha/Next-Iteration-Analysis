@@ -44,6 +44,38 @@ final class LiftMetricsCalculatorTests: XCTestCase {
         XCTAssertLessThanOrEqual(segments.map(\.speed).min() ?? 0, 1)
     }
 
+    func testRepSegmentsExposeBottomAndOpacity() {
+        let path = [
+            point(frame: 0, time: 0.0, x: 0.5, y: 0.4),
+            point(frame: 1, time: 0.2, x: 0.5, y: 0.8),
+            point(frame: 2, time: 0.4, x: 0.5, y: 0.45),
+            point(frame: 3, time: 0.6, x: 0.5, y: 0.42),
+            point(frame: 4, time: 0.8, x: 0.5, y: 0.82),
+            point(frame: 5, time: 1.0, x: 0.5, y: 0.43)
+        ]
+
+        let reps = calculator.repSegments(for: path, reps: 2)
+
+        XCTAssertEqual(reps.count, 2)
+        XCTAssertEqual(reps[0].bottom.y, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(reps[0].opacity, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(reps[1].bottom.y, 0.82, accuracy: 0.0001)
+        XCTAssertEqual(reps[1].opacity, 1.0, accuracy: 0.0001)
+    }
+
+    func testVideoMetadataAspectRatioUsesDimensions() {
+        let metadata = VideoMetadata(
+            duration: 1,
+            fps: 30,
+            resolution: "1920 x 1080",
+            width: 1080,
+            height: 1920,
+            creationDate: nil
+        )
+
+        XCTAssertEqual(metadata.aspectRatio ?? 0, 0.5625, accuracy: 0.0001)
+    }
+
     private func point(frame: Int, time: Double, x: Double, y: Double) -> TrackedPoint {
         TrackedPoint(id: UUID(), timestamp: time, frameIndex: frame, x: x, y: y, confidence: 0.9)
     }

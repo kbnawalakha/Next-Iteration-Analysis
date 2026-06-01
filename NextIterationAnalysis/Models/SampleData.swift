@@ -7,6 +7,7 @@ enum SampleData {
             createdAt: Calendar.current.date(byAdding: .day, value: -2, to: .now) ?? .now,
             videoURL: nil,
             thumbnailURL: nil,
+            videoAspectRatio: 16 / 9,
             liftType: .squat,
             weight: 225,
             unit: .lb,
