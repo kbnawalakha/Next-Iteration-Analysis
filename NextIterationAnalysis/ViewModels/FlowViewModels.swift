@@ -188,10 +188,10 @@ final class AnalysisViewModel: ObservableObject {
         }
     }
 
-    func exportAnnotatedVideo() async {
+    func exportAnnotatedVideo(colorStyle: BarPathColorStyle = .velocity) async {
         guard let session = session else { return }
         do {
-            let url = try await annotatedVideoExportService.export(session: session)
+            let url = try await annotatedVideoExportService.export(session: session, colorStyle: colorStyle)
             exportMessage = "Annotated video exported to \(url.lastPathComponent)"
             exportedURL = url
         } catch {
