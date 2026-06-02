@@ -5,6 +5,22 @@ struct PointSelectionView: View {
     let details: LiftDetails
     @StateObject private var viewModel = PointSelectionViewModel()
 
+    @State private var trimStart: Double = 0
+    @State private var trimEnd: Double = 0
+    @State private var didInitTrim = false
+
+    private var duration: Double { max(0, importedVideo?.metadata.duration ?? 0) }
+
+    /// The [start, end] seconds to analyze, or `nil` for the whole video.
+    private var selectedRange: ClosedRange<Double>? {
+        guard duration > 0 else { return nil }
+        let lower = min(trimStart, trimEnd)
+        let upper = max(trimStart, trimEnd)
+        guard upper - lower > 0.1 else { return nil }
+        let isWholeVideo = lower <= 0.05 && upper >= duration - 0.05
+        return isWholeVideo ? nil : lower...upper
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             HStack {
@@ -29,13 +45,16 @@ struct PointSelectionView: View {
                     .padding(.horizontal)
             }
 
+            trimControls
+
             NavigationLink {
                 AnalysisProgressView(
                     viewModel: AnalysisViewModel(
                         importedVideo: importedVideo,
                         details: details,
                         startPoint: viewModel.selectedPoint,
-                        trackingMode: viewModel.trackingMode
+                        trackingMode: viewModel.trackingMode,
+                        timeRange: selectedRange
                     )
                 )
             } label: {
@@ -52,11 +71,65 @@ struct PointSelectionView: View {
                 .padding(.horizontal)
         }
         .padding(.vertical)
+        .onAppear {
+            if !didInitTrim {
+                trimStart = 0
+                trimEnd = duration
+                didInitTrim = true
+            }
+        }
         .task {
             await viewModel.autoDetect(video: importedVideo)
         }
         .navigationTitle("Plate Center")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var trimControls: some View {
+        if duration > 0 {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Analyze segment", systemImage: "scissors")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text("\(timeString(min(trimStart, trimEnd))) – \(timeString(max(trimStart, trimEnd)))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 8) {
+                    Text("Start").font(.caption).foregroundStyle(.secondary).frame(width: 38, alignment: .leading)
+                    Slider(value: $trimStart, in: 0...duration)
+                }
+                HStack(spacing: 8) {
+                    Text("End").font(.caption).foregroundStyle(.secondary).frame(width: 38, alignment: .leading)
+                    Slider(value: $trimEnd, in: 0...duration)
+                }
+
+                HStack {
+                    Text(selectedRange == nil
+                         ? "Analyzing the whole clip. Trim to a single rep for the cleanest, full frame-rate tracking."
+                         : "Analyzing only the selected segment at full frame rate.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if selectedRange != nil {
+                        Button("Reset") {
+                            trimStart = 0
+                            trimEnd = duration
+                        }
+                        .font(.caption2)
+                    }
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    private func timeString(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private var confidenceColor: Color {

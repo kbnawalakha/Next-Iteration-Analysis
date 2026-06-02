@@ -135,9 +135,9 @@ struct VelocityBarPathOverlay: View {
 
                         let bottomPoint = point(rep.bottom, in: size)
                         context.stroke(
-                            Path(ellipseIn: CGRect(x: bottomPoint.x - 7, y: bottomPoint.y - 7, width: 14, height: 14)),
-                            with: .color(.white.opacity(rep.opacity)),
-                            lineWidth: 2
+                            Path(ellipseIn: CGRect(x: bottomPoint.x - 4, y: bottomPoint.y - 4, width: 8, height: 8)),
+                            with: .color(.white.opacity(rep.opacity * 0.9)),
+                            lineWidth: 1
                         )
                     }
                 }
@@ -145,10 +145,10 @@ struct VelocityBarPathOverlay: View {
                 if let current = visiblePath.last {
                     context.fill(
                         Path(ellipseIn: CGRect(
-                            x: point(current, in: size).x - 6,
-                            y: point(current, in: size).y - 6,
-                            width: 12,
-                            height: 12
+                            x: point(current, in: size).x - 4,
+                            y: point(current, in: size).y - 4,
+                            width: 8,
+                            height: 8
                         )),
                         with: .color(.white)
                     )
@@ -173,7 +173,7 @@ struct VelocityBarPathOverlay: View {
                 index: segment.index,
                 points: visiblePoints,
                 bottom: visiblePoints.max(by: { $0.y < $1.y }) ?? segment.bottom,
-                opacity: active ? 1.0 : 0.5
+                opacity: active ? 1.0 : 0.28
             )
         }
     }
@@ -191,7 +191,7 @@ struct VelocityBarPathOverlay: View {
             context.stroke(
                 segmentPath,
                 with: .color(Self.pathColor(for: segment.speed, style: colorStyle).opacity(opacity)),
-                style: StrokeStyle(lineWidth: opacity >= 1 ? 6 : 3, lineCap: .round, lineJoin: .round)
+                style: StrokeStyle(lineWidth: opacity >= 1 ? 3 : 1.5, lineCap: .round, lineJoin: .round)
             )
         }
     }
