@@ -8,7 +8,7 @@ struct PointSelectionView: View {
     var body: some View {
         VStack(spacing: 16) {
             HStack {
-                Label("Detected plate center", systemImage: "scope")
+                Label("Auto-detected plate center", systemImage: "scope")
                 Spacer()
                 if viewModel.isDetecting {
                     ProgressView()
@@ -39,14 +39,14 @@ struct PointSelectionView: View {
                     )
                 )
             } label: {
-                Label("Analyze Plate Center Path", systemImage: "waveform.path.ecg")
+                Label("Analyze Bar Path", systemImage: "waveform.path.ecg")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .padding(.horizontal)
 
-            Text("Confirm the target is centered on the visible weight plate. Drag the marker if the detected center is off.")
+            Text("The plate is detected automatically. You only need to tap or drag the marker if it landed on the wrong spot — your adjusted position becomes the tracking start.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
