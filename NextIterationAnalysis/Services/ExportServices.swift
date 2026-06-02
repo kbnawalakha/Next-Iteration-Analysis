@@ -27,10 +27,19 @@ final class AnnotatedVideoExportService {
         guard let analysis = session.analysis else { throw ExportError.missingAnalysis }
 
         let asset = AVURLAsset(url: sourceURL)
-        guard !(try await asset.loadTracks(withMediaType: .video)).isEmpty else {
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        guard let videoTrack = videoTracks.first else {
             throw ExportError.missingVideoTrack
         }
         let fps = await VideoFrameExtractor().nominalFrameRate(for: sourceURL)
+
+        // Render at the video's true (orientation-applied) size so the export
+        // matches the source and AVFoundation doesn't reject a mismatched size,
+        // which was causing the annotated export to fail.
+        let naturalSize = (try? await videoTrack.load(.naturalSize)) ?? CGSize(width: 1280, height: 720)
+        let preferredTransform = (try? await videoTrack.load(.preferredTransform)) ?? .identity
+        let orientedSize = naturalSize.applying(preferredTransform)
+        let renderSize = CGSize(width: max(16, abs(orientedSize.width)), height: max(16, abs(orientedSize.height)))
 
         let overlayRenderer = AnnotatedVideoOverlayRenderer(path: analysis.trackedPath, reps: session.reps, colorStyle: colorStyle)
         let videoComposition = AVMutableVideoComposition(asset: asset) { request in
@@ -47,6 +56,7 @@ final class AnnotatedVideoExportService {
             )
             request.finish(with: overlay.composited(over: source).cropped(to: extent), context: nil)
         }
+        videoComposition.renderSize = renderSize
         videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, Int(round(fps)))))
 
         let destination = try storage.makeExportURL(fileName: "\(session.liftType.rawValue)-annotated-\(session.id.uuidString.prefix(8)).mp4")
@@ -56,7 +66,7 @@ final class AnnotatedVideoExportService {
 
         guard let exportSession = AVAssetExportSession(
             asset: asset,
-            presetName: AVAssetExportPreset1280x720
+            presetName: AVAssetExportPresetHighestQuality
         ) else {
             throw ExportError.exportFailed
         }
@@ -155,21 +165,20 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
             for rep in repSegments {
                 drawVelocitySegments(metricsCalculator.velocitySegments(for: rep.points), opacity: rep.opacity, size: size)
                 let bottom = cgPoint(rep.bottom, renderSize: size)
-                let marker = UIBezierPath(ovalIn: CGRect(x: bottom.x - 9, y: bottom.y - 9, width: 18, height: 18))
-                UIColor.white.withAlphaComponent(rep.opacity).setStroke()
-                marker.lineWidth = 3
+                let markerSize = max(8.0, size.width * 0.022)
+                let marker = UIBezierPath(ovalIn: CGRect(x: bottom.x - markerSize / 2, y: bottom.y - markerSize / 2, width: markerSize, height: markerSize))
+                UIColor.white.withAlphaComponent(rep.opacity * 0.9).setStroke()
+                marker.lineWidth = 1.5
                 marker.stroke()
             }
         }
 
         guard let current = visiblePath.last else { return }
         let point = cgPoint(current, renderSize: size)
-        let marker = UIBezierPath(ovalIn: CGRect(x: point.x - 9, y: point.y - 9, width: 18, height: 18))
+        let dotSize = max(8.0, size.width * 0.02)
+        let marker = UIBezierPath(ovalIn: CGRect(x: point.x - dotSize / 2, y: point.y - dotSize / 2, width: dotSize, height: dotSize))
         UIColor.white.setFill()
-        UIColor.systemRed.setStroke()
-        marker.lineWidth = 4
         marker.fill()
-        marker.stroke()
     }
 
     private func visibleSegments(through currentTime: Double?) -> [RepPathSegment] {
@@ -183,7 +192,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
                 index: segment.index,
                 points: visiblePoints,
                 bottom: visiblePoints.max(by: { $0.y < $1.y }) ?? segment.bottom,
-                opacity: active ? 1.0 : 0.5
+                opacity: active ? 1.0 : 0.28
             )
         }
     }

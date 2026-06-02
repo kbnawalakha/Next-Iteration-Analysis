@@ -63,19 +63,11 @@ final class LiftMetricsCalculator {
     func detectReps(path: [TrackedPoint], fallbackReps: Int) -> Int {
         let bottoms = detectedBottomIndices(path: path, fallbackReps: fallbackReps)
         if !bottoms.isEmpty {
-            return max(1, min(bottoms.count, 20))
+            return max(1, min(bottoms.count, 30))
         }
-
-        guard path.count > 8 else { return max(fallbackReps, 1) }
-
-        let smoothed = SmoothingUtils.movingAverage(path, window: 3)
-        let ys = smoothed.map(\.y)
-        guard let minY = ys.min(), let maxY = ys.max() else { return max(fallbackReps, 1) }
-        let range = maxY - minY
-        guard range > 0.05 else { return max(fallbackReps, 1) }
-
-        let netTravel = abs((smoothed.first?.y ?? 0) - (smoothed.last?.y ?? 0))
-        return netTravel > range * 0.45 ? 1 : max(fallbackReps, 1)
+        // No full down-up cycle resolved (e.g. almost no vertical travel):
+        // trust the user-entered rep count rather than guessing.
+        return max(1, fallbackReps)
     }
 
     func velocitySegments(for path: [TrackedPoint]) -> [VelocitySegment] {
@@ -101,7 +93,9 @@ final class LiftMetricsCalculator {
                 guard start < end, bottomIndex >= start, bottomIndex <= end else { return nil }
 
                 let repPoints = Array(path[start...end])
-                let opacity: Double = repIndex == bottoms.count - 1 ? 1 : 0.5
+                // Only the rep currently being performed is fully opaque; once a
+                // rep is finished it fades to a light translucent trail.
+                let opacity: Double = repIndex == bottoms.count - 1 ? 1 : 0.28
 
                 return RepPathSegment(
                     index: repIndex,
@@ -121,12 +115,7 @@ final class LiftMetricsCalculator {
             let repPoints = Array(path[start...boundedEnd])
             guard let bottom = repPoints.max(by: { $0.y < $1.y }) else { return nil }
 
-            let opacity: Double
-            if repIndex == reps - 1 {
-                opacity = 1
-            } else {
-                opacity = 0.5
-            }
+            let opacity: Double = repIndex == reps - 1 ? 1 : 0.28
 
             return RepPathSegment(
                 index: repIndex,
@@ -162,44 +151,55 @@ final class LiftMetricsCalculator {
         return weight * (1 + effectiveReps / 30)
     }
 
+    /// Counts reps by finding each full "down then back up" cycle of the bar.
+    /// The vertical signal is smoothed, then a hysteresis band (cross the lower
+    /// 60% line going toward the bottom, then return past the upper 40% line)
+    /// resolves one rep per cycle. Hysteresis ignores jitter that a simple
+    /// peak count would over-count, which is why the old detector misfired.
+    /// Returns the index of each rep's bottom (deepest point) for segmentation.
     private func detectedBottomIndices(path: [TrackedPoint], fallbackReps: Int) -> [Int] {
-        guard path.count > 8 else { return [] }
+        guard path.count >= 6 else { return [] }
 
-        let smoothed = SmoothingUtils.movingAverage(path, window: 3)
+        let smoothed = SmoothingUtils.movingAverage(path, window: 5)
         let ys = smoothed.map(\.y)
         guard let minY = ys.min(), let maxY = ys.max() else { return [] }
-        let range = maxY - minY
-        guard range > 0.05 else { return [] }
+        let amplitude = maxY - minY
+        // Require a meaningful amount of vertical travel before counting reps.
+        guard amplitude > 0.06 else { return [] }
 
-        let minimumGap = max(4, smoothed.count / max(fallbackReps * 3, 6))
-        let velocities = zip(smoothed.dropFirst(), smoothed).map { current, previous in
-            (current.y - previous.y) / max(current.timestamp - previous.timestamp, 0.001)
-        }
-        let peakVelocity = velocities.map(abs).max() ?? 0
-        let velocityGate = max(0.02, peakVelocity * 0.18)
-        let prominence = range * 0.16
+        // y increases downward, so the "bottom" of a rep is a HIGH y value.
+        let enterBottom = minY + amplitude * 0.60
+        let returnTop = minY + amplitude * 0.40
+
         var bottoms: [Int] = []
+        var inBottomPhase = false
+        var deepestIndex = 0
+        var deepestValue = -Double.greatestFiniteMagnitude
 
-        for index in 1..<velocities.count {
-            let previousVelocity = velocities[index - 1]
-            let currentVelocity = velocities[index]
-            let crossedFromDescentToAscent = previousVelocity > velocityGate && currentVelocity < -velocityGate
-            guard crossedFromDescentToAscent else { continue }
-
-            let bottomIndex = index
-            let lookback = max(0, bottomIndex - minimumGap)
-            let lookahead = min(ys.count - 1, bottomIndex + minimumGap)
-            let descentTravel = ys[bottomIndex] - (ys[lookback...bottomIndex].min() ?? ys[bottomIndex])
-            let ascentTravel = ys[bottomIndex] - (ys[bottomIndex...lookahead].min() ?? ys[bottomIndex])
-            guard min(descentTravel, ascentTravel) >= prominence else { continue }
-
-            if let last = bottoms.last, bottomIndex - last < minimumGap {
-                if smoothed[bottomIndex].y > smoothed[last].y {
-                    bottoms[bottoms.count - 1] = bottomIndex
+        for index in ys.indices {
+            let y = ys[index]
+            if !inBottomPhase {
+                if y >= enterBottom {
+                    inBottomPhase = true
+                    deepestIndex = index
+                    deepestValue = y
                 }
             } else {
-                bottoms.append(bottomIndex)
+                if y > deepestValue {
+                    deepestValue = y
+                    deepestIndex = index
+                }
+                if y <= returnTop {
+                    bottoms.append(deepestIndex)
+                    inBottomPhase = false
+                    deepestValue = -Double.greatestFiniteMagnitude
+                }
             }
+        }
+
+        // The lifter may finish at (or near) the bottom without fully returning.
+        if inBottomPhase {
+            bottoms.append(deepestIndex)
         }
 
         return bottoms

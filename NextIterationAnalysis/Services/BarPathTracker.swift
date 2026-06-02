@@ -424,7 +424,11 @@ final class BarPathTracker {
         startingPoint: NormalizedPoint,
         timeRange: ClosedRange<Double>? = nil
     ) async throws -> [TrackedPoint] {
-        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 600, timeRange: timeRange)
+        // Cap total processed frames for speed (and bound memory). Native fps is
+        // preserved for typical-length clips; long clips decimate — trim to keep
+        // full fidelity. A smaller processing resolution speeds up per-frame work.
+        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 360, timeRange: timeRange)
+        let colorMaxWidth = 200
         guard let firstFrame = frames.first,
               let firstLuminance = LuminanceFrame(image: firstFrame.image) else {
             return []
@@ -435,7 +439,7 @@ final class BarPathTracker {
             near: startingPoint,
             maxCenterDistancePixels: Double(anchorSearchRadius)
         )
-        let firstColorFrame = PlateColorFrame(image: firstFrame.image)
+        let firstColorFrame = PlateColorFrame(image: firstFrame.image, maxWidth: colorMaxWidth)
         let initialCenter = initialFit?.center ?? startingPoint
         let targetHue = firstColorFrame?.dominantHue(near: initialCenter, radiusFraction: 0.05)
 
@@ -468,7 +472,7 @@ final class BarPathTracker {
             var chosen: NormalizedPoint?
             var chosenConfidence = 0.0
 
-            if let targetHue, let colorFrame = PlateColorFrame(image: frame.image) {
+            if let targetHue, let colorFrame = PlateColorFrame(image: frame.image, maxWidth: colorMaxWidth) {
                 let minArea = max(24, colorFrame.width * colorFrame.height / 700)
                 let components = colorFrame.hueComponents(targetHue: targetHue, tolerance: 30, minArea: minArea)
                 if !components.isEmpty {
