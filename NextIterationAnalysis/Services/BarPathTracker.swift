@@ -63,6 +63,11 @@ final class AutomaticPlateDetectionService {
             return coreMLCandidate
         }
 
+        if let colorFrame = PlateColorFrame(image: image),
+           let colorCandidate = colorFrame.likelyPlateCandidate() {
+            return colorCandidate
+        }
+
         guard let luminance = LuminanceFrame(image: image) else { return nil }
         return luminance.likelyPlateCandidate()
     }
@@ -98,6 +103,165 @@ final class AutomaticPlateDetectionService {
             explanation: "Automatic detection used the bundled PlateBarbellDetector Core ML model and selected the plate center. Drag to correct if needed."
         )
     }
+}
+
+struct PlateColorFrame {
+    let width: Int
+    let height: Int
+    let pixels: [UInt8]
+
+    init?(image: CGImage, maxWidth: Int = 260) {
+        let scale = min(1, Double(maxWidth) / Double(max(image.width, 1)))
+        let targetWidth = max(48, Int(Double(image.width) * scale))
+        let targetHeight = max(48, Int(Double(image.height) * scale))
+        var buffer = [UInt8](repeating: 0, count: targetWidth * targetHeight * 4)
+
+        guard let context = CGContext(
+            data: &buffer,
+            width: targetWidth,
+            height: targetHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: targetWidth * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+        self.width = targetWidth
+        self.height = targetHeight
+        self.pixels = buffer
+    }
+
+    func likelyPlateCandidate() -> PlateDetectionResult? {
+        var visited = [Bool](repeating: false, count: width * height)
+        var best: PlateColorComponent?
+
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = y * width + x
+                guard !visited[index], isPlateColoredPixel(x: x, y: y) else { continue }
+                let component = floodFill(fromX: x, y: y, visited: &visited)
+                guard component.area >= max(45, width * height / 450),
+                      component.aspectRatio >= 0.45,
+                      component.aspectRatio <= 2.2,
+                      component.centerY < Double(height) * 0.72 else {
+                    continue
+                }
+
+                if best == nil || component.score > (best?.score ?? 0) {
+                    best = component
+                }
+            }
+        }
+
+        guard let best else { return nil }
+        let point = NormalizedPoint(
+            x: best.centerX / Double(width),
+            y: best.centerY / Double(height)
+        )
+        return PlateDetectionResult(
+            point: point,
+            confidence: min(0.9, max(0.62, best.score)),
+            explanation: "Automatic detection selected the largest saturated circular plate-like region and fitted its color-segment center. Drag to correct if needed."
+        )
+    }
+
+    private func floodFill(fromX startX: Int, y startY: Int, visited: inout [Bool]) -> PlateColorComponent {
+        var stack = [(startX, startY)]
+        var area = 0
+        var sumX = 0.0
+        var sumY = 0.0
+        var minX = startX
+        var maxX = startX
+        var minY = startY
+        var maxY = startY
+        var saturationTotal = 0.0
+
+        while let (x, y) = stack.popLast() {
+            guard x >= 0, x < width, y >= 0, y < height else { continue }
+            let index = y * width + x
+            guard !visited[index], isPlateColoredPixel(x: x, y: y) else { continue }
+            visited[index] = true
+
+            let saturation = pixelHSV(x: x, y: y).saturation
+            area += 1
+            sumX += Double(x)
+            sumY += Double(y)
+            saturationTotal += saturation
+            minX = min(minX, x)
+            maxX = max(maxX, x)
+            minY = min(minY, y)
+            maxY = max(maxY, y)
+
+            stack.append((x + 1, y))
+            stack.append((x - 1, y))
+            stack.append((x, y + 1))
+            stack.append((x, y - 1))
+        }
+
+        let boxWidth = max(1, maxX - minX + 1)
+        let boxHeight = max(1, maxY - minY + 1)
+        let fillRatio = Double(area) / Double(boxWidth * boxHeight)
+        let aspect = Double(boxWidth) / Double(boxHeight)
+        let averageSaturation = saturationTotal / Double(max(area, 1))
+        let areaScore = min(1, Double(area) / Double(max(width * height / 30, 1)))
+        let roundnessScore = max(0, 1 - abs(1 - aspect) * 0.45)
+        let score = averageSaturation * 0.35 + fillRatio * 0.25 + areaScore * 0.25 + roundnessScore * 0.15
+
+        return PlateColorComponent(
+            area: area,
+            centerX: sumX / Double(max(area, 1)),
+            centerY: sumY / Double(max(area, 1)),
+            aspectRatio: aspect,
+            score: score
+        )
+    }
+
+    private func isPlateColoredPixel(x: Int, y: Int) -> Bool {
+        let hsv = pixelHSV(x: x, y: y)
+        guard hsv.saturation > 0.28, hsv.value > 0.18 else { return false }
+        let hue = hsv.hue
+        let isGreen = hue >= 55 && hue <= 175
+        let isBlue = hue >= 185 && hue <= 255
+        let isRed = hue <= 22 || hue >= 335
+        let isYellow = hue >= 35 && hue <= 58
+        return isGreen || isBlue || isRed || isYellow
+    }
+
+    private func pixelHSV(x: Int, y: Int) -> (hue: Double, saturation: Double, value: Double) {
+        let index = (y * width + x) * 4
+        let red = Double(pixels[index]) / 255
+        let green = Double(pixels[index + 1]) / 255
+        let blue = Double(pixels[index + 2]) / 255
+        let maxValue = max(red, green, blue)
+        let minValue = min(red, green, blue)
+        let delta = maxValue - minValue
+        let saturation = maxValue == 0 ? 0 : delta / maxValue
+
+        let hue: Double
+        if delta == 0 {
+            hue = 0
+        } else if maxValue == red {
+            hue = 60 * ((green - blue) / delta).truncatingRemainder(dividingBy: 6)
+        } else if maxValue == green {
+            hue = 60 * ((blue - red) / delta + 2)
+        } else {
+            hue = 60 * ((red - green) / delta + 4)
+        }
+
+        return (hue < 0 ? hue + 360 : hue, saturation, maxValue)
+    }
+}
+
+private struct PlateColorComponent {
+    let area: Int
+    let centerX: Double
+    let centerY: Double
+    let aspectRatio: Double
+    let score: Double
 }
 
 final class BarPathTracker {
