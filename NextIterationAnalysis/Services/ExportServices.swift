@@ -121,7 +121,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
         let image = renderer.image { context in
             UIColor.clear.setFill()
             context.fill(CGRect(origin: .zero, size: size))
-            drawVelocityPath(size: size, path: visiblePath, reps: reps)
+            drawVelocityPath(size: size, visiblePath: visiblePath, currentTime: currentTime)
             drawWatermark(size: size)
         }
 
@@ -146,10 +146,10 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
         return Array(path.prefix(min(path.count, 2)))
     }
 
-    private func drawVelocityPath(size: CGSize, path: [TrackedPoint], reps: Int) {
-        let repSegments = metricsCalculator.repSegments(for: path, reps: reps)
+    private func drawVelocityPath(size: CGSize, visiblePath: [TrackedPoint], currentTime: Double?) {
+        let repSegments = visibleSegments(through: currentTime)
         if repSegments.isEmpty {
-            drawVelocitySegments(metricsCalculator.velocitySegments(for: path), opacity: 1, size: size)
+            drawVelocitySegments(metricsCalculator.velocitySegments(for: visiblePath), opacity: 1, size: size)
         } else {
             for rep in repSegments {
                 drawVelocitySegments(metricsCalculator.velocitySegments(for: rep.points), opacity: rep.opacity, size: size)
@@ -161,7 +161,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
             }
         }
 
-        guard let current = path.last else { return }
+        guard let current = visiblePath.last else { return }
         let point = cgPoint(current, renderSize: size)
         let marker = UIBezierPath(ovalIn: CGRect(x: point.x - 9, y: point.y - 9, width: 18, height: 18))
         UIColor.white.setFill()
@@ -169,6 +169,28 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
         marker.lineWidth = 4
         marker.fill()
         marker.stroke()
+    }
+
+    private func visibleSegments(through currentTime: Double?) -> [RepPathSegment] {
+        let fullSegments = metricsCalculator.repSegments(for: path, reps: reps)
+        guard let currentTime else { return fullSegments }
+        return fullSegments.compactMap { segment in
+            let visiblePoints = visiblePath(from: segment.points, through: currentTime)
+            guard visiblePoints.count > 1, visiblePoints.first?.timestamp ?? 0 <= currentTime else { return nil }
+            let active = (visiblePoints.last?.timestamp ?? 0) < (segment.points.last?.timestamp ?? 0)
+            return RepPathSegment(
+                index: segment.index,
+                points: visiblePoints,
+                bottom: visiblePoints.max(by: { $0.y < $1.y }) ?? segment.bottom,
+                opacity: active ? 1.0 : 0.5
+            )
+        }
+    }
+
+    private func visiblePath(from points: [TrackedPoint], through currentTime: Double) -> [TrackedPoint] {
+        let visible = points.filter { $0.timestamp <= currentTime }
+        if visible.count > 1 { return visible }
+        return Array(points.prefix(min(points.count, 2)))
     }
 
     private func drawVelocitySegments(_ segments: [VelocitySegment], opacity: Double, size: CGSize) {

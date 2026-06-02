@@ -112,13 +112,19 @@ final class BarPathTracker {
         if let videoURL = videoURL,
            let trackedPoints = try? await trackWithTemplateMatching(videoURL: videoURL, startingPoint: startingPoint),
            trackingScore(trackedPoints) > 0.18 {
-            return SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints))
+            return preserveInitialPoint(
+                SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints)),
+                startingPoint: startingPoint
+            )
         }
 
         if let videoURL = videoURL,
            let visionPoints = try? await trackWithVision(videoURL: videoURL, startingPoint: startingPoint),
            trackingScore(visionPoints) > 0.18 {
-            return SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(visionPoints))
+            return preserveInitialPoint(
+                SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(visionPoints)),
+                startingPoint: startingPoint
+            )
         }
 
         return simulatedPath(startingPoint: startingPoint, reps: reps, mode: mode)
@@ -203,6 +209,20 @@ final class BarPathTracker {
     private func trackingScore(_ points: [TrackedPoint]) -> Double {
         guard points.count > 2 else { return 0 }
         return points.map(\.confidence).reduce(0, +) / Double(points.count)
+    }
+
+    private func preserveInitialPoint(_ points: [TrackedPoint], startingPoint: NormalizedPoint) -> [TrackedPoint] {
+        guard let first = points.first else { return points }
+        var corrected = points
+        corrected[0] = TrackedPoint(
+            id: first.id,
+            timestamp: first.timestamp,
+            frameIndex: first.frameIndex,
+            x: startingPoint.x,
+            y: startingPoint.y,
+            confidence: max(first.confidence, 0.82)
+        )
+        return corrected
     }
 
     private func trackWithTemplateMatching(

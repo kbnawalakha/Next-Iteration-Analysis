@@ -82,16 +82,17 @@ struct VelocityBarPathOverlay: View {
     var body: some View {
         GeometryReader { proxy in
             Canvas { context, size in
-                let visiblePath = visiblePath()
-                let repSegments = calculator.repSegments(for: visiblePath, reps: reps)
-                let velocityByFrame = Dictionary(uniqueKeysWithValues: calculator.velocitySegments(for: visiblePath).map {
+                let visiblePath = visiblePath(from: path)
+                let fullRepSegments = calculator.repSegments(for: path, reps: reps)
+                let visibleRepSegments = visibleSegments(from: fullRepSegments)
+                let velocityByFrame = Dictionary(uniqueKeysWithValues: calculator.velocitySegments(for: path).map {
                     ($0.to.frameIndex, $0.speed)
                 })
 
-                if repSegments.isEmpty {
+                if visibleRepSegments.isEmpty {
                     drawVelocitySegments(calculator.velocitySegments(for: visiblePath), opacity: 1, context: &context, size: size)
                 } else {
-                    for rep in repSegments {
+                    for rep in visibleRepSegments {
                         let segments = calculator.velocitySegments(for: rep.points).map { segment in
                             VelocitySegment(
                                 from: segment.from,
@@ -126,11 +127,26 @@ struct VelocityBarPathOverlay: View {
         }
     }
 
-    private func visiblePath() -> [TrackedPoint] {
-        guard let currentTime else { return path }
-        let visible = path.filter { $0.timestamp <= currentTime }
+    private func visiblePath(from points: [TrackedPoint]) -> [TrackedPoint] {
+        guard let currentTime else { return points }
+        let visible = points.filter { $0.timestamp <= currentTime }
         if visible.count > 1 { return visible }
-        return Array(path.prefix(min(path.count, 2)))
+        return Array(points.prefix(min(points.count, 2)))
+    }
+
+    private func visibleSegments(from segments: [RepPathSegment]) -> [RepPathSegment] {
+        guard let currentTime else { return segments }
+        return segments.compactMap { segment in
+            let visiblePoints = visiblePath(from: segment.points)
+            guard visiblePoints.count > 1, visiblePoints.first?.timestamp ?? 0 <= currentTime else { return nil }
+            let active = (visiblePoints.last?.timestamp ?? 0) < (segment.points.last?.timestamp ?? 0)
+            return RepPathSegment(
+                index: segment.index,
+                points: visiblePoints,
+                bottom: visiblePoints.max(by: { $0.y < $1.y }) ?? segment.bottom,
+                opacity: active ? 1.0 : 0.5
+            )
+        }
     }
 
     private func drawVelocitySegments(
