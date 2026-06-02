@@ -83,6 +83,8 @@ final class AnalysisViewModel: ObservableObject {
     let details: LiftDetails
     let startPoint: NormalizedPoint
     let trackingMode: TrackingMode
+    /// Optional [start, end] seconds to analyze only part of the video.
+    let timeRange: ClosedRange<Double>?
 
     private let tracker = BarPathTracker()
     private let poseDetectionService = PoseDetectionService()
@@ -98,12 +100,14 @@ final class AnalysisViewModel: ObservableObject {
         importedVideo: ImportedLiftVideo?,
         details: LiftDetails,
         startPoint: NormalizedPoint,
-        trackingMode: TrackingMode
+        trackingMode: TrackingMode,
+        timeRange: ClosedRange<Double>? = nil
     ) {
         self.importedVideo = importedVideo
         self.details = details
         self.startPoint = startPoint
         self.trackingMode = trackingMode
+        self.timeRange = timeRange
     }
 
     func runAnalysis() async {
@@ -121,7 +125,8 @@ final class AnalysisViewModel: ObservableObject {
                 videoURL: importedVideo?.videoURL,
                 startingPoint: startPoint,
                 reps: details.reps,
-                mode: trackingMode
+                mode: trackingMode,
+                timeRange: timeRange
             )
 
             try await step(.calculatingMetrics)
