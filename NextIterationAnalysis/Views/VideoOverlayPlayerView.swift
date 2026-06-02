@@ -129,15 +129,13 @@ struct VelocityBarPathOverlay: View {
 
     private func visiblePath(from points: [TrackedPoint]) -> [TrackedPoint] {
         guard let currentTime else { return points }
-        let visible = points.filter { $0.timestamp <= currentTime }
-        if visible.count > 1 { return visible }
-        return Array(points.prefix(min(points.count, 2)))
+        return frameAlignedPath(from: points, at: currentTime, offsetsFromFirstFrame: true)
     }
 
     private func visibleSegments(from segments: [RepPathSegment]) -> [RepPathSegment] {
         guard let currentTime else { return segments }
         return segments.compactMap { segment in
-            let visiblePoints = visiblePath(from: segment.points)
+            let visiblePoints = frameAlignedPath(from: segment.points, at: currentTime, offsetsFromFirstFrame: false)
             guard visiblePoints.count > 1, visiblePoints.first?.timestamp ?? 0 <= currentTime else { return nil }
             let active = (visiblePoints.last?.timestamp ?? 0) < (segment.points.last?.timestamp ?? 0)
             return RepPathSegment(
@@ -169,6 +167,45 @@ struct VelocityBarPathOverlay: View {
 
     private func point(_ trackedPoint: TrackedPoint, in size: CGSize) -> CGPoint {
         CGPoint(x: trackedPoint.x * size.width, y: trackedPoint.y * size.height)
+    }
+
+    private func frameAlignedPath(
+        from points: [TrackedPoint],
+        at playbackTime: Double,
+        offsetsFromFirstFrame: Bool
+    ) -> [TrackedPoint] {
+        guard let first = points.first else { return [] }
+        guard points.count > 1 else { return points }
+
+        let timelineTime = playbackTime + (offsetsFromFirstFrame ? max(0, first.timestamp) : 0)
+        if timelineTime <= first.timestamp {
+            return [first]
+        }
+
+        guard let nextIndex = points.firstIndex(where: { $0.timestamp >= timelineTime }) else {
+            return points
+        }
+
+        if nextIndex == 0 {
+            return [first]
+        }
+
+        let previous = points[nextIndex - 1]
+        let next = points[nextIndex]
+        let duration = max(next.timestamp - previous.timestamp, 0.0001)
+        let progress = min(1, max(0, (timelineTime - previous.timestamp) / duration))
+        let interpolated = TrackedPoint(
+            id: UUID(),
+            timestamp: timelineTime,
+            frameIndex: next.frameIndex,
+            x: previous.x + (next.x - previous.x) * progress,
+            y: previous.y + (next.y - previous.y) * progress,
+            confidence: previous.confidence + (next.confidence - previous.confidence) * progress
+        )
+
+        var visible = Array(points.prefix(nextIndex))
+        visible.append(interpolated)
+        return visible
     }
 
 }

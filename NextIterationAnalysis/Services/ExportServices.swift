@@ -109,7 +109,8 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
         }
         let visiblePath = visiblePath(through: currentTime)
         let cacheFrame = visiblePath.last?.frameIndex ?? -1
-        let cacheKey = "\(Int(size.width))x\(Int(size.height))-\(visiblePath.count)-\(cacheFrame)-\(reps)"
+        let cacheTime = Int(((currentTime ?? -1) * 1000).rounded())
+        let cacheKey = "\(Int(size.width))x\(Int(size.height))-\(visiblePath.count)-\(cacheFrame)-\(cacheTime)-\(reps)"
         lock.lock()
         if let cached = overlayCache[cacheKey] {
             lock.unlock()
@@ -141,9 +142,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
 
     private func visiblePath(through currentTime: Double?) -> [TrackedPoint] {
         guard let currentTime else { return path }
-        let visible = path.filter { $0.timestamp <= currentTime }
-        if visible.count > 1 { return visible }
-        return Array(path.prefix(min(path.count, 2)))
+        return frameAlignedPath(from: path, at: currentTime, offsetsFromFirstFrame: true)
     }
 
     private func drawVelocityPath(size: CGSize, visiblePath: [TrackedPoint], currentTime: Double?) {
@@ -188,9 +187,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
     }
 
     private func visiblePath(from points: [TrackedPoint], through currentTime: Double) -> [TrackedPoint] {
-        let visible = points.filter { $0.timestamp <= currentTime }
-        if visible.count > 1 { return visible }
-        return Array(points.prefix(min(points.count, 2)))
+        frameAlignedPath(from: points, at: currentTime, offsetsFromFirstFrame: false)
     }
 
     private func drawVelocitySegments(_ segments: [VelocitySegment], opacity: Double, size: CGSize) {
@@ -227,6 +224,45 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
 
     private func cgPoint(_ point: TrackedPoint, renderSize: CGSize) -> CGPoint {
         CGPoint(x: point.x * renderSize.width, y: point.y * renderSize.height)
+    }
+
+    private func frameAlignedPath(
+        from points: [TrackedPoint],
+        at playbackTime: Double,
+        offsetsFromFirstFrame: Bool
+    ) -> [TrackedPoint] {
+        guard let first = points.first else { return [] }
+        guard points.count > 1 else { return points }
+
+        let timelineTime = playbackTime + (offsetsFromFirstFrame ? max(0, first.timestamp) : 0)
+        if timelineTime <= first.timestamp {
+            return [first]
+        }
+
+        guard let nextIndex = points.firstIndex(where: { $0.timestamp >= timelineTime }) else {
+            return points
+        }
+
+        if nextIndex == 0 {
+            return [first]
+        }
+
+        let previous = points[nextIndex - 1]
+        let next = points[nextIndex]
+        let duration = max(next.timestamp - previous.timestamp, 0.0001)
+        let progress = min(1, max(0, (timelineTime - previous.timestamp) / duration))
+        let interpolated = TrackedPoint(
+            id: UUID(),
+            timestamp: timelineTime,
+            frameIndex: next.frameIndex,
+            x: previous.x + (next.x - previous.x) * progress,
+            y: previous.y + (next.y - previous.y) * progress,
+            confidence: previous.confidence + (next.confidence - previous.confidence) * progress
+        )
+
+        var visible = Array(points.prefix(nextIndex))
+        visible.append(interpolated)
+        return visible
     }
 
 }
