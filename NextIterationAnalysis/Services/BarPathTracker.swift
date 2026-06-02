@@ -393,10 +393,11 @@ final class BarPathTracker {
         videoURL: URL?,
         startingPoint: NormalizedPoint,
         reps: Int,
-        mode: TrackingMode
+        mode: TrackingMode,
+        timeRange: ClosedRange<Double>? = nil
     ) async -> [TrackedPoint] {
         if let videoURL = videoURL,
-           let trackedPoints = try? await trackPlate(videoURL: videoURL, startingPoint: startingPoint),
+           let trackedPoints = try? await trackPlate(videoURL: videoURL, startingPoint: startingPoint, timeRange: timeRange),
            trackingScore(trackedPoints) > 0.18 {
             return preserveInitialPoint(
                 SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints)),
@@ -420,9 +421,10 @@ final class BarPathTracker {
     /// usable hue) we fall back to luminance plate fitting.
     private func trackPlate(
         videoURL: URL,
-        startingPoint: NormalizedPoint
+        startingPoint: NormalizedPoint,
+        timeRange: ClosedRange<Double>? = nil
     ) async throws -> [TrackedPoint] {
-        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 600)
+        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 600, timeRange: timeRange)
         guard let firstFrame = frames.first,
               let firstLuminance = LuminanceFrame(image: firstFrame.image) else {
             return []
