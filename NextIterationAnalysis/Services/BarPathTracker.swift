@@ -264,6 +264,92 @@ struct PlateColorFrame {
 
         return (hue < 0 ? hue + 360 : hue, saturation, maxValue)
     }
+
+    // MARK: - Color-locked tracking helpers
+
+    /// Saturation-weighted circular-mean hue of the saturated pixels inside a
+    /// small disk around `point`. Captures the plate's color signature at the
+    /// confirmed start point so the per-frame tracker can follow that color
+    /// (whatever it is) instead of latching onto dark background objects.
+    /// Returns `nil` for low-saturation plates (black iron, chrome, white),
+    /// in which case the caller falls back to luminance plate fitting.
+    func dominantHue(near point: NormalizedPoint, radiusFraction: Double) -> Double? {
+        let radius = max(4, Int(radiusFraction * Double(min(width, height))))
+        let centerX = Int(point.x * Double(width))
+        let centerY = Int(point.y * Double(height))
+        var sinSum = 0.0
+        var cosSum = 0.0
+        var weightSum = 0.0
+
+        for y in max(0, centerY - radius)...min(height - 1, centerY + radius) {
+            for x in max(0, centerX - radius)...min(width - 1, centerX + radius) {
+                let dx = x - centerX
+                let dy = y - centerY
+                guard dx * dx + dy * dy <= radius * radius else { continue }
+                let hsv = pixelHSV(x: x, y: y)
+                guard hsv.saturation > 0.30, hsv.value > 0.20 else { continue }
+                let radians = hsv.hue * .pi / 180
+                sinSum += sin(radians) * hsv.saturation
+                cosSum += cos(radians) * hsv.saturation
+                weightSum += hsv.saturation
+            }
+        }
+
+        guard weightSum > 0 else { return nil }
+        var degrees = atan2(sinSum, cosSum) * 180 / .pi
+        if degrees < 0 { degrees += 360 }
+        return degrees
+    }
+
+    /// Finds the saturation-weighted centroid of pixels matching `targetHue`
+    /// within a search window around `point`. Returns the plate-colored center
+    /// and a confidence proportional to how much of the window matched. This is
+    /// the primary per-frame tracker for colored bumper plates of any hue.
+    func plateCenter(
+        near point: NormalizedPoint,
+        targetHue: Double,
+        hueTolerance: Double,
+        searchRadiusFraction: Double
+    ) -> (center: NormalizedPoint, confidence: Double)? {
+        let radius = max(6, Int(searchRadiusFraction * Double(min(width, height))))
+        let centerX = Int(point.x * Double(width))
+        let centerY = Int(point.y * Double(height))
+        let minX = max(0, centerX - radius)
+        let maxX = min(width - 1, centerX + radius)
+        let minY = max(0, centerY - radius)
+        let maxY = min(height - 1, centerY + radius)
+        guard minX < maxX, minY < maxY else { return nil }
+
+        var sumX = 0.0
+        var sumY = 0.0
+        var weightSum = 0.0
+        var matchCount = 0
+        var sampleCount = 0
+
+        for y in minY...maxY {
+            for x in minX...maxX {
+                sampleCount += 1
+                let hsv = pixelHSV(x: x, y: y)
+                guard hsv.saturation > 0.30, hsv.value > 0.20 else { continue }
+                var hueDiff = abs(hsv.hue - targetHue)
+                if hueDiff > 180 { hueDiff = 360 - hueDiff }
+                guard hueDiff <= hueTolerance else { continue }
+                sumX += Double(x) * hsv.saturation
+                sumY += Double(y) * hsv.saturation
+                weightSum += hsv.saturation
+                matchCount += 1
+            }
+        }
+
+        guard matchCount >= 12, weightSum > 0 else { return nil }
+        let center = NormalizedPoint(
+            x: (sumX / weightSum) / Double(width),
+            y: (sumY / weightSum) / Double(height)
+        )
+        let coverage = Double(matchCount) / Double(max(sampleCount, 1))
+        let confidence = min(0.96, max(0.30, coverage * 3.0))
+        return (center, confidence)
+    }
 }
 
 private struct PlateColorComponent {
@@ -310,15 +396,21 @@ final class BarPathTracker {
         }
 
         let anchorSearchRadius = max(10, min(firstLuminance.width, firstLuminance.height) / 12)
-        guard let initialFit = firstLuminance.fittedPlate(
+        let initialFit = firstLuminance.fittedPlate(
             near: startingPoint,
             maxCenterDistancePixels: Double(anchorSearchRadius)
-        ) else {
-            return []
-        }
+        )
 
-        var previousPoint = initialFit.center
-        var previousRadius = initialFit.radiusPixels
+        // Capture the plate's color signature at the confirmed start point so
+        // the tracker follows that color (any hue) instead of drifting onto
+        // dark background objects. `nil` => low-saturation plate, use luminance.
+        let firstColorFrame = PlateColorFrame(image: firstFrame.image)
+        let initialCenter = initialFit?.center ?? startingPoint
+        let fallbackRadius = Double(max(7, min(firstLuminance.width, firstLuminance.height) / 22))
+        let targetHue = firstColorFrame?.dominantHue(near: initialCenter, radiusFraction: 0.05)
+
+        var previousPoint = initialCenter
+        var previousRadius = initialFit?.radiusPixels ?? fallbackRadius
         var velocity = NormalizedPoint(x: 0, y: 0)
         var missedFrames = 0
         var trackedPoints: [TrackedPoint] = [
@@ -328,7 +420,7 @@ final class BarPathTracker {
                 frameIndex: firstFrame.frameIndex,
                 x: previousPoint.x,
                 y: previousPoint.y,
-                confidence: max(0.72, initialFit.confidence)
+                confidence: max(0.72, initialFit?.confidence ?? 0.5)
             )
         ]
 
@@ -346,6 +438,53 @@ final class BarPathTracker {
                 frameHeight: luminance.height
             )
 
+            // 1) Primary tracker: lock onto the plate's own color near the
+            //    predicted point. A slightly wider jump budget is allowed here
+            //    because color matching is far less prone to background drift
+            //    than luminance contrast, which kept fast lifts from following.
+            if let targetHue,
+               let colorMatch = PlateColorFrame(image: frame.image)?.plateCenter(
+                    near: predictedPoint,
+                    targetHue: targetHue,
+                    hueTolerance: 30,
+                    searchRadiusFraction: 0.10
+               ),
+               pixelDistance(
+                    from: colorMatch.center,
+                    to: previousPoint,
+                    frameWidth: luminance.width,
+                    frameHeight: luminance.height
+               ) <= maxJumpPixels * 1.8 {
+                let lockedCenter = pointWithinPixelRadius(
+                    colorMatch.center,
+                    anchor: previousPoint,
+                    maxPixels: maxJumpPixels * 1.8,
+                    frameWidth: luminance.width,
+                    frameHeight: luminance.height
+                )
+                let nextVelocity = NormalizedPoint(
+                    x: lockedCenter.x - previousPoint.x,
+                    y: lockedCenter.y - previousPoint.y
+                )
+                velocity = NormalizedPoint(
+                    x: velocity.x * 0.72 + nextVelocity.x * 0.28,
+                    y: velocity.y * 0.72 + nextVelocity.y * 0.28
+                )
+                previousPoint = lockedCenter
+                missedFrames = 0
+                trackedPoints.append(TrackedPoint(
+                    id: UUID(),
+                    timestamp: frame.timestamp,
+                    frameIndex: frame.frameIndex,
+                    x: lockedCenter.x,
+                    y: lockedCenter.y,
+                    confidence: max(0.3, min(0.96, colorMatch.confidence))
+                ))
+                continue
+            }
+
+            // 2) Fallback: luminance plate fitting (low-saturation plates, or
+            //    frames where the color match was not confident).
             let refit = luminance.fittedPlate(
                 near: predictedPoint,
                 expectedRadiusPixels: previousRadius,

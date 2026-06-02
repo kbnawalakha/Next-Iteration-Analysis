@@ -22,7 +22,7 @@ final class CSVExportService {
 final class AnnotatedVideoExportService {
     private let storage = LocalStorageService()
 
-    func export(session: LiftSession) async throws -> URL {
+    func export(session: LiftSession, colorStyle: BarPathColorStyle = .velocity) async throws -> URL {
         guard let sourceURL = session.videoURL else { throw ExportError.missingVideo }
         guard let analysis = session.analysis else { throw ExportError.missingAnalysis }
 
@@ -32,7 +32,7 @@ final class AnnotatedVideoExportService {
         }
         let fps = await VideoFrameExtractor().nominalFrameRate(for: sourceURL)
 
-        let overlayRenderer = AnnotatedVideoOverlayRenderer(path: analysis.trackedPath, reps: session.reps)
+        let overlayRenderer = AnnotatedVideoOverlayRenderer(path: analysis.trackedPath, reps: session.reps, colorStyle: colorStyle)
         let videoComposition = AVMutableVideoComposition(asset: asset) { request in
             let source = request.sourceImage
             let extent = source.extent
@@ -94,13 +94,15 @@ private final class ExportSessionBox: @unchecked Sendable {
 final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
     private let path: [TrackedPoint]
     private let reps: Int
+    private let colorStyle: BarPathColorStyle
     private let metricsCalculator = LiftMetricsCalculator()
     private let lock = NSLock()
     private var overlayCache: [String: CIImage] = [:]
 
-    init(path: [TrackedPoint], reps: Int) {
+    init(path: [TrackedPoint], reps: Int, colorStyle: BarPathColorStyle = .velocity) {
         self.path = path
         self.reps = reps
+        self.colorStyle = colorStyle
     }
 
     func overlayImage(size: CGSize, extent: CGRect, currentTime: Double? = nil) -> CIImage {
@@ -110,7 +112,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
         let visiblePath = visiblePath(through: currentTime)
         let cacheFrame = visiblePath.last?.frameIndex ?? -1
         let cacheTime = Int(((currentTime ?? -1) * 1000).rounded())
-        let cacheKey = "\(Int(size.width))x\(Int(size.height))-\(visiblePath.count)-\(cacheFrame)-\(cacheTime)-\(reps)"
+        let cacheKey = "\(Int(size.width))x\(Int(size.height))-\(visiblePath.count)-\(cacheFrame)-\(cacheTime)-\(reps)-\(colorStyle.rawValue)"
         lock.lock()
         if let cached = overlayCache[cacheKey] {
             lock.unlock()
@@ -198,9 +200,28 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
             line.lineWidth = max(opacity >= 1 ? 7 : 3.5, size.width * (opacity >= 1 ? 0.007 : 0.004))
             line.lineCapStyle = .round
             line.lineJoinStyle = .round
-            let strokeColor = opacity >= 1 ? UIColor.white : UIColor.systemGray
+            let strokeColor = Self.pathColor(for: segment.speed, style: colorStyle)
             strokeColor.withAlphaComponent(opacity).setStroke()
             line.stroke()
+        }
+    }
+
+    /// Bar path color for the exported annotated video. Mirrors
+    /// `VelocityBarPathOverlay.pathColor(for:style:)` so the in-app overlay and
+    /// the exported video match. `.velocity` is vivid green while moving,
+    /// shifting toward yellow/orange/red through slow sticking points;
+    /// `.solidGreen` always returns the same green.
+    static func pathColor(for normalizedSpeed: Double, style: BarPathColorStyle) -> UIColor {
+        let green = UIColor(hue: CGFloat(1.0 / 3.0), saturation: 0.95, brightness: 0.95, alpha: 1)
+        switch style {
+        case .solidGreen:
+            return green
+        case .velocity:
+            let speed = min(1, max(0, normalizedSpeed))
+            let eased = pow(speed, 0.6)
+            // UIColor hue space: 0.0 = red, ~0.166 = yellow, 0.333 = green.
+            let hue = eased * (1.0 / 3.0)
+            return UIColor(hue: CGFloat(hue), saturation: 0.95, brightness: 0.95, alpha: 1)
         }
     }
 
