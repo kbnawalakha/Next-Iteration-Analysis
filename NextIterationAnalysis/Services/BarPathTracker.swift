@@ -88,19 +88,21 @@ final class AutomaticPlateDetectionService {
             .compactMap { $0 as? VNRecognizedObjectObservation }
             .filter { observation in
                 guard let label = observation.labels.first?.identifier.lowercased() else { return false }
-                return label.contains("plate") || label.contains("barbell") || label.contains("bar")
+                return label == "0" || label == "1" || label.contains("plate") || label.contains("barbell") || label.contains("bar")
             }
             .max { $0.confidence < $1.confidence }
 
         guard let candidate = candidate else { return nil }
         let box = candidate.boundingBox
+        let detectedCenter = NormalizedPoint(
+            x: Double(box.midX),
+            y: Double(1 - box.midY)
+        )
+        let fittedCenter = LuminanceFrame(image: image)?.refinedPlateCenter(near: detectedCenter) ?? detectedCenter
         return PlateDetectionResult(
-            point: NormalizedPoint(
-                x: Double(box.midX),
-                y: Double(1 - box.midY)
-            ),
+            point: fittedCenter,
             confidence: Double(candidate.confidence),
-            explanation: "Automatic detection used the bundled PlateBarbellDetector Core ML model and selected the plate center. Drag to correct if needed."
+            explanation: "Automatic detection used the bundled PlateBarbellDetector Core ML model, then refined the detected region to a fitted plate center. Drag to correct if needed."
         )
     }
 }

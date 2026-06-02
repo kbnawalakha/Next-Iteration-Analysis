@@ -6,7 +6,7 @@ Next Iteration Analysis is an iPhone-first SwiftUI app scaffold for analyzing we
 
 - Photos video import with local storage and thumbnail generation.
 - Lift details form for lift type, weight, unit, reps, RPE, goal, and notes.
-- Manual tracking point selection plus optional Core ML plate detection and automatic plate candidate scoring.
+- Confirmable automatic plate point selection with optional Core ML plate/barbell detection and automatic plate candidate scoring.
 - Velocity-colored bar path overlay.
 - Basic metrics: displacement, speed, path consistency, technique score, confidence.
 - Rule-based critique with a backend-ready AI-analysis client for full video understanding.
@@ -19,4 +19,14 @@ Next Iteration Analysis is an iPhone-first SwiftUI app scaffold for analyzing we
 
 ## Notes
 
-Automatic plate detection, bar tracking, annotated video rendering, and full AI video understanding are implemented behind replaceable services. Bundle `PlateBarbellDetector.mlmodelc` to enable trained plate/barbell detection; otherwise the app falls back to first-frame candidate scoring. The current tracker uses AVFoundation frame extraction plus template matching, which is a practical MVP step before adding a Lucas-Kanade optical flow pipeline.
+Automatic plate detection, bar tracking, annotated video rendering, and full AI video understanding are implemented behind replaceable services. Bundle `PlateBarbellDetector.mlmodelc` to enable trained plate/barbell detection; otherwise the app falls back to color-segmented and first-frame candidate scoring. The current tracker uses AVFoundation frame extraction plus template matching, which is a practical MVP step before adding a Lucas-Kanade optical flow pipeline.
+
+## Roboflow Detector
+
+The app can use the Roboflow Universe [Barbell detector](https://universe.roboflow.com/kakann/barbell-detector-bncfm) model as the trained detector source. Export or convert it to Core ML, add the compiled model to the app bundle as:
+
+```text
+PlateBarbellDetector.mlmodelc
+```
+
+`AutomaticPlateDetectionService` will use that model first, accepting Roboflow labels `0`, `1`, `barbell`, and `Barbell`. The detector bounding box is only used as the initial region; the app then refines the point with plate-center fitting before showing the user the draggable confirmation marker.
