@@ -72,6 +72,7 @@ final class AutomaticPlateDetectionService {
                     explanation: "Automatic detection segmented the colored plate region, then refined it to a fitted plate center. Drag to correct if needed."
                 )
             }
+            return colorCandidate
         }
 
         guard let luminance = LuminanceFrame(image: image) else { return nil }
@@ -105,7 +106,11 @@ final class AutomaticPlateDetectionService {
             y: Double(1 - box.midY)
         )
         guard let fittedCenter = LuminanceFrame(image: image)?.fittedPlate(near: detectedCenter)?.center else {
-            return nil
+            return PlateDetectionResult(
+                point: detectedCenter,
+                confidence: Double(candidate.confidence),
+                explanation: "Automatic detection used the bundled PlateBarbellDetector Core ML model. Drag to correct if needed."
+            )
         }
         return PlateDetectionResult(
             point: fittedCenter,
@@ -113,6 +118,13 @@ final class AutomaticPlateDetectionService {
             explanation: "Automatic detection used the bundled PlateBarbellDetector Core ML model, then refined the detected region to a fitted plate center. Drag to correct if needed."
         )
     }
+}
+
+struct HueComponent {
+    let center: NormalizedPoint
+    let area: Int
+    let radiusPixels: Double
+    let saturation: Double
 }
 
 struct PlateColorFrame {
@@ -177,6 +189,106 @@ struct PlateColorFrame {
             confidence: min(0.9, max(0.62, best.score)),
             explanation: "Automatic detection selected the largest saturated circular plate-like region and fitted its color-segment center. Drag to correct if needed."
         )
+    }
+
+    // MARK: - Color-locked tracking helpers
+
+    /// Saturation-weighted circular-mean hue of the saturated pixels inside a
+    /// small disk around `point`. Captures the plate's color signature at the
+    /// confirmed start point so the per-frame tracker can follow that color
+    /// (whatever it is). Returns `nil` for low-saturation plates (black iron,
+    /// chrome, white), in which case the caller falls back to luminance fitting.
+    func dominantHue(near point: NormalizedPoint, radiusFraction: Double) -> Double? {
+        let radius = max(4, Int(radiusFraction * Double(min(width, height))))
+        let centerX = Int(point.x * Double(width))
+        let centerY = Int(point.y * Double(height))
+        var sinSum = 0.0
+        var cosSum = 0.0
+        var weightSum = 0.0
+
+        for y in max(0, centerY - radius)...min(height - 1, centerY + radius) {
+            for x in max(0, centerX - radius)...min(width - 1, centerX + radius) {
+                let dx = x - centerX
+                let dy = y - centerY
+                guard dx * dx + dy * dy <= radius * radius else { continue }
+                let hsv = pixelHSV(x: x, y: y)
+                guard hsv.saturation > 0.30, hsv.value > 0.20 else { continue }
+                let radians = hsv.hue * .pi / 180
+                sinSum += sin(radians) * hsv.saturation
+                cosSum += cos(radians) * hsv.saturation
+                weightSum += hsv.saturation
+            }
+        }
+
+        guard weightSum > 0 else { return nil }
+        var degrees = atan2(sinSum, cosSum) * 180 / .pi
+        if degrees < 0 { degrees += 360 }
+        return degrees
+    }
+
+    /// Finds all connected regions whose hue matches `targetHue` (within
+    /// `tolerance` degrees) and that are at least `minArea` pixels. Each
+    /// component's centroid, area, rough radius and mean saturation are
+    /// returned. The tracker scans these every frame and picks the one nearest
+    /// the predicted plate position — this follows the plate in ANY direction
+    /// and re-acquires it after a brief loss, instead of freezing.
+    func hueComponents(targetHue: Double, tolerance: Double, minArea: Int) -> [HueComponent] {
+        var visited = [Bool](repeating: false, count: width * height)
+        var components: [HueComponent] = []
+
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = y * width + x
+                guard !visited[index], matchesHue(x: x, y: y, targetHue: targetHue, tolerance: tolerance) else { continue }
+
+                var stack = [(x, y)]
+                var area = 0
+                var sumX = 0.0
+                var sumY = 0.0
+                var saturationTotal = 0.0
+                var minX = x, maxX = x, minY = y, maxY = y
+
+                while let (cx, cy) = stack.popLast() {
+                    guard cx >= 0, cx < width, cy >= 0, cy < height else { continue }
+                    let i = cy * width + cx
+                    guard !visited[i], matchesHue(x: cx, y: cy, targetHue: targetHue, tolerance: tolerance) else { continue }
+                    visited[i] = true
+                    area += 1
+                    sumX += Double(cx)
+                    sumY += Double(cy)
+                    saturationTotal += pixelHSV(x: cx, y: cy).saturation
+                    minX = min(minX, cx); maxX = max(maxX, cx)
+                    minY = min(minY, cy); maxY = max(maxY, cy)
+                    stack.append((cx + 1, cy))
+                    stack.append((cx - 1, cy))
+                    stack.append((cx, cy + 1))
+                    stack.append((cx, cy - 1))
+                }
+
+                guard area >= minArea else { continue }
+                let boxWidth = Double(maxX - minX + 1)
+                let boxHeight = Double(maxY - minY + 1)
+                components.append(HueComponent(
+                    center: NormalizedPoint(
+                        x: (sumX / Double(area)) / Double(width),
+                        y: (sumY / Double(area)) / Double(height)
+                    ),
+                    area: area,
+                    radiusPixels: (boxWidth + boxHeight) / 4,
+                    saturation: saturationTotal / Double(area)
+                ))
+            }
+        }
+
+        return components
+    }
+
+    private func matchesHue(x: Int, y: Int, targetHue: Double, tolerance: Double) -> Bool {
+        let hsv = pixelHSV(x: x, y: y)
+        guard hsv.saturation > 0.28, hsv.value > 0.18 else { return false }
+        var diff = abs(hsv.hue - targetHue)
+        if diff > 180 { diff = 360 - diff }
+        return diff <= tolerance
     }
 
     private func floodFill(fromX startX: Int, y startY: Int, visited: inout [Bool]) -> PlateColorComponent {
@@ -264,92 +376,6 @@ struct PlateColorFrame {
 
         return (hue < 0 ? hue + 360 : hue, saturation, maxValue)
     }
-
-    // MARK: - Color-locked tracking helpers
-
-    /// Saturation-weighted circular-mean hue of the saturated pixels inside a
-    /// small disk around `point`. Captures the plate's color signature at the
-    /// confirmed start point so the per-frame tracker can follow that color
-    /// (whatever it is) instead of latching onto dark background objects.
-    /// Returns `nil` for low-saturation plates (black iron, chrome, white),
-    /// in which case the caller falls back to luminance plate fitting.
-    func dominantHue(near point: NormalizedPoint, radiusFraction: Double) -> Double? {
-        let radius = max(4, Int(radiusFraction * Double(min(width, height))))
-        let centerX = Int(point.x * Double(width))
-        let centerY = Int(point.y * Double(height))
-        var sinSum = 0.0
-        var cosSum = 0.0
-        var weightSum = 0.0
-
-        for y in max(0, centerY - radius)...min(height - 1, centerY + radius) {
-            for x in max(0, centerX - radius)...min(width - 1, centerX + radius) {
-                let dx = x - centerX
-                let dy = y - centerY
-                guard dx * dx + dy * dy <= radius * radius else { continue }
-                let hsv = pixelHSV(x: x, y: y)
-                guard hsv.saturation > 0.30, hsv.value > 0.20 else { continue }
-                let radians = hsv.hue * .pi / 180
-                sinSum += sin(radians) * hsv.saturation
-                cosSum += cos(radians) * hsv.saturation
-                weightSum += hsv.saturation
-            }
-        }
-
-        guard weightSum > 0 else { return nil }
-        var degrees = atan2(sinSum, cosSum) * 180 / .pi
-        if degrees < 0 { degrees += 360 }
-        return degrees
-    }
-
-    /// Finds the saturation-weighted centroid of pixels matching `targetHue`
-    /// within a search window around `point`. Returns the plate-colored center
-    /// and a confidence proportional to how much of the window matched. This is
-    /// the primary per-frame tracker for colored bumper plates of any hue.
-    func plateCenter(
-        near point: NormalizedPoint,
-        targetHue: Double,
-        hueTolerance: Double,
-        searchRadiusFraction: Double
-    ) -> (center: NormalizedPoint, confidence: Double)? {
-        let radius = max(6, Int(searchRadiusFraction * Double(min(width, height))))
-        let centerX = Int(point.x * Double(width))
-        let centerY = Int(point.y * Double(height))
-        let minX = max(0, centerX - radius)
-        let maxX = min(width - 1, centerX + radius)
-        let minY = max(0, centerY - radius)
-        let maxY = min(height - 1, centerY + radius)
-        guard minX < maxX, minY < maxY else { return nil }
-
-        var sumX = 0.0
-        var sumY = 0.0
-        var weightSum = 0.0
-        var matchCount = 0
-        var sampleCount = 0
-
-        for y in minY...maxY {
-            for x in minX...maxX {
-                sampleCount += 1
-                let hsv = pixelHSV(x: x, y: y)
-                guard hsv.saturation > 0.30, hsv.value > 0.20 else { continue }
-                var hueDiff = abs(hsv.hue - targetHue)
-                if hueDiff > 180 { hueDiff = 360 - hueDiff }
-                guard hueDiff <= hueTolerance else { continue }
-                sumX += Double(x) * hsv.saturation
-                sumY += Double(y) * hsv.saturation
-                weightSum += hsv.saturation
-                matchCount += 1
-            }
-        }
-
-        guard matchCount >= 12, weightSum > 0 else { return nil }
-        let center = NormalizedPoint(
-            x: (sumX / weightSum) / Double(width),
-            y: (sumY / weightSum) / Double(height)
-        )
-        let coverage = Double(matchCount) / Double(max(sampleCount, 1))
-        let confidence = min(0.96, max(0.30, coverage * 3.0))
-        return (center, confidence)
-    }
 }
 
 private struct PlateColorComponent {
@@ -370,7 +396,7 @@ final class BarPathTracker {
         mode: TrackingMode
     ) async -> [TrackedPoint] {
         if let videoURL = videoURL,
-           let trackedPoints = try? await trackWithPlateCenterFitting(videoURL: videoURL, startingPoint: startingPoint),
+           let trackedPoints = try? await trackPlate(videoURL: videoURL, startingPoint: startingPoint),
            trackingScore(trackedPoints) > 0.18 {
             return preserveInitialPoint(
                 SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints)),
@@ -385,11 +411,18 @@ final class BarPathTracker {
         return simulatedPath(startingPoint: startingPoint, reps: reps, mode: mode)
     }
 
-    private func trackWithPlateCenterFitting(
+    /// Tracks the plate by following its colored region from frame to frame.
+    /// Each frame we collect every region matching the plate's captured hue and
+    /// pick the one closest to where we predict the plate to be (last position
+    /// plus smoothed velocity), allowing motion in any direction. If nothing
+    /// plausible is near the prediction, we re-acquire by taking the largest
+    /// matching region anywhere in the frame. For low-saturation plates (no
+    /// usable hue) we fall back to luminance plate fitting.
+    private func trackPlate(
         videoURL: URL,
         startingPoint: NormalizedPoint
     ) async throws -> [TrackedPoint] {
-        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 160)
+        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 600)
         guard let firstFrame = frames.first,
               let firstLuminance = LuminanceFrame(image: firstFrame.image) else {
             return []
@@ -400,17 +433,17 @@ final class BarPathTracker {
             near: startingPoint,
             maxCenterDistancePixels: Double(anchorSearchRadius)
         )
-
-        // Capture the plate's color signature at the confirmed start point so
-        // the tracker follows that color (any hue) instead of drifting onto
-        // dark background objects. `nil` => low-saturation plate, use luminance.
         let firstColorFrame = PlateColorFrame(image: firstFrame.image)
         let initialCenter = initialFit?.center ?? startingPoint
-        let fallbackRadius = Double(max(7, min(firstLuminance.width, firstLuminance.height) / 22))
         let targetHue = firstColorFrame?.dominantHue(near: initialCenter, radiusFraction: 0.05)
 
+        // Expected plate footprint as a fraction of the frame, used to reject
+        // tiny specks (leaves, reflections) and huge merged background regions.
+        let expectedAreaFraction: Double? = initialFit.map {
+            (.pi * $0.radiusPixels * $0.radiusPixels) / Double(firstLuminance.width * firstLuminance.height)
+        }
+
         var previousPoint = initialCenter
-        var previousRadius = initialFit?.radiusPixels ?? fallbackRadius
         var velocity = NormalizedPoint(x: 0, y: 0)
         var missedFrames = 0
         var trackedPoints: [TrackedPoint] = [
@@ -425,83 +458,79 @@ final class BarPathTracker {
         ]
 
         for frame in frames.dropFirst() {
-            guard let luminance = LuminanceFrame(image: frame.image) else { continue }
-            let maxJumpPixels = max(10, min(60, previousRadius * 1.15))
-            let predictedPoint = pointWithinPixelRadius(
-                clamped(NormalizedPoint(
-                    x: previousPoint.x + velocity.x,
-                    y: previousPoint.y + velocity.y
-                )),
-                anchor: previousPoint,
-                maxPixels: maxJumpPixels,
-                frameWidth: luminance.width,
-                frameHeight: luminance.height
-            )
+            let predicted = clamped(NormalizedPoint(
+                x: previousPoint.x + velocity.x,
+                y: previousPoint.y + velocity.y
+            ))
 
-            // 1) Primary tracker: lock onto the plate's own color near the
-            //    predicted point. A slightly wider jump budget is allowed here
-            //    because color matching is far less prone to background drift
-            //    than luminance contrast, which kept fast lifts from following.
-            if let targetHue,
-               let colorMatch = PlateColorFrame(image: frame.image)?.plateCenter(
-                    near: predictedPoint,
-                    targetHue: targetHue,
-                    hueTolerance: 30,
-                    searchRadiusFraction: 0.10
-               ),
-               pixelDistance(
-                    from: colorMatch.center,
-                    to: previousPoint,
-                    frameWidth: luminance.width,
-                    frameHeight: luminance.height
-               ) <= maxJumpPixels * 1.8 {
-                let lockedCenter = pointWithinPixelRadius(
-                    colorMatch.center,
-                    anchor: previousPoint,
-                    maxPixels: maxJumpPixels * 1.8,
-                    frameWidth: luminance.width,
-                    frameHeight: luminance.height
-                )
+            var chosen: NormalizedPoint?
+            var chosenConfidence = 0.0
+
+            if let targetHue, let colorFrame = PlateColorFrame(image: frame.image) {
+                let minArea = max(24, colorFrame.width * colorFrame.height / 700)
+                let components = colorFrame.hueComponents(targetHue: targetHue, tolerance: 30, minArea: minArea)
+                if !components.isEmpty {
+                    let frameArea = Double(colorFrame.width * colorFrame.height)
+
+                    func areaScore(_ component: HueComponent) -> Double {
+                        guard let expected = expectedAreaFraction, expected > 0 else { return 1 }
+                        let ratio = (Double(component.area) / frameArea) / expected
+                        return (ratio >= 0.2 && ratio <= 5) ? 1 : 0.25
+                    }
+
+                    let scored = components.map { component -> (NormalizedPoint, Double) in
+                        let dx = component.center.x - predicted.x
+                        let dy = component.center.y - predicted.y
+                        let distance = (dx * dx + dy * dy).squareRoot()
+                        let proximity = max(0, 1 - distance / 0.35)
+                        let score = proximity * 0.7 + areaScore(component) * 0.2 + min(1, component.saturation) * 0.1
+                        return (component.center, score)
+                    }
+
+                    if let best = scored.max(by: { $0.1 < $1.1 }), best.1 > 0.28 {
+                        chosen = best.0
+                        chosenConfidence = min(0.96, max(0.4, best.1))
+                    } else if let largest = components.max(by: { $0.area < $1.area }) {
+                        // Re-acquire: the prediction drifted, take the dominant
+                        // matching region (usually still the plate).
+                        chosen = largest.center
+                        chosenConfidence = 0.35
+                    }
+                }
+            }
+
+            if chosen == nil,
+               let luminance = LuminanceFrame(image: frame.image),
+               let fit = luminance.fittedPlate(
+                    near: predicted,
+                    maxCenterDistancePixels: Double(max(luminance.width, luminance.height))
+               ) {
+                chosen = fit.center
+                chosenConfidence = max(0.2, min(0.9, fit.confidence))
+            }
+
+            if let center = chosen {
                 let nextVelocity = NormalizedPoint(
-                    x: lockedCenter.x - previousPoint.x,
-                    y: lockedCenter.y - previousPoint.y
+                    x: center.x - previousPoint.x,
+                    y: center.y - previousPoint.y
                 )
                 velocity = NormalizedPoint(
-                    x: velocity.x * 0.72 + nextVelocity.x * 0.28,
-                    y: velocity.y * 0.72 + nextVelocity.y * 0.28
+                    x: velocity.x * 0.6 + nextVelocity.x * 0.4,
+                    y: velocity.y * 0.6 + nextVelocity.y * 0.4
                 )
-                previousPoint = lockedCenter
+                previousPoint = center
                 missedFrames = 0
                 trackedPoints.append(TrackedPoint(
                     id: UUID(),
                     timestamp: frame.timestamp,
                     frameIndex: frame.frameIndex,
-                    x: lockedCenter.x,
-                    y: lockedCenter.y,
-                    confidence: max(0.3, min(0.96, colorMatch.confidence))
+                    x: center.x,
+                    y: center.y,
+                    confidence: chosenConfidence
                 ))
-                continue
-            }
-
-            // 2) Fallback: luminance plate fitting (low-saturation plates, or
-            //    frames where the color match was not confident).
-            let refit = luminance.fittedPlate(
-                near: predictedPoint,
-                expectedRadiusPixels: previousRadius,
-                maxCenterDistancePixels: maxJumpPixels
-            )
-
-            guard let fit = refit,
-                  isConsistentPlateFit(
-                    fit,
-                    previousPoint: previousPoint,
-                    previousRadiusPixels: previousRadius,
-                    maxJumpPixels: maxJumpPixels,
-                    frameWidth: luminance.width,
-                    frameHeight: luminance.height
-                  ) else {
+            } else {
                 missedFrames += 1
-                velocity = NormalizedPoint(x: velocity.x * 0.35, y: velocity.y * 0.35)
+                velocity = NormalizedPoint(x: velocity.x * 0.5, y: velocity.y * 0.5)
                 trackedPoints.append(TrackedPoint(
                     id: UUID(),
                     timestamp: frame.timestamp,
@@ -510,29 +539,7 @@ final class BarPathTracker {
                     y: previousPoint.y,
                     confidence: missedFrames <= 5 ? 0.12 : 0.04
                 ))
-                continue
             }
-
-            let nextVelocity = NormalizedPoint(
-                x: fit.center.x - previousPoint.x,
-                y: fit.center.y - previousPoint.y
-            )
-            velocity = NormalizedPoint(
-                x: velocity.x * 0.72 + nextVelocity.x * 0.28,
-                y: velocity.y * 0.72 + nextVelocity.y * 0.28
-            )
-            previousPoint = fit.center
-            previousRadius = previousRadius * 0.82 + fit.radiusPixels * 0.18
-            missedFrames = 0
-
-            trackedPoints.append(TrackedPoint(
-                id: UUID(),
-                timestamp: frame.timestamp,
-                frameIndex: frame.frameIndex,
-                x: fit.center.x,
-                y: fit.center.y,
-                confidence: max(0.2, min(0.96, fit.confidence))
-            ))
         }
 
         return trackedPoints
@@ -588,62 +595,6 @@ final class BarPathTracker {
 
     private func clamped(_ point: NormalizedPoint) -> NormalizedPoint {
         NormalizedPoint(x: clamp(point.x, 0.02, 0.98), y: clamp(point.y, 0.02, 0.98))
-    }
-
-    private func isConsistentPlateFit(
-        _ fit: PlateFit,
-        previousPoint: NormalizedPoint,
-        previousRadiusPixels: Double,
-        maxJumpPixels: Double,
-        frameWidth: Int,
-        frameHeight: Int
-    ) -> Bool {
-        let distancePixels = pixelDistance(
-            from: fit.center,
-            to: previousPoint,
-            frameWidth: frameWidth,
-            frameHeight: frameHeight
-        )
-        let radiusRatio = fit.radiusPixels / max(previousRadiusPixels, 1)
-        let areaRatio = fit.areaPixels / max(Double.pi * previousRadiusPixels * previousRadiusPixels, 1)
-
-        return distancePixels <= maxJumpPixels
-            && radiusRatio >= 0.58
-            && radiusRatio <= 1.58
-            && areaRatio >= 0.34
-            && areaRatio <= 2.5
-            && fit.circularity >= 0.18
-            && fit.confidence >= 0.2
-    }
-
-    private func pointWithinPixelRadius(
-        _ point: NormalizedPoint,
-        anchor: NormalizedPoint,
-        maxPixels: Double,
-        frameWidth: Int,
-        frameHeight: Int
-    ) -> NormalizedPoint {
-        let dx = (point.x - anchor.x) * Double(frameWidth)
-        let dy = (point.y - anchor.y) * Double(frameHeight)
-        let distance = hypot(dx, dy)
-        guard distance > maxPixels, distance > 0 else { return point }
-        let scale = maxPixels / distance
-        return clamped(NormalizedPoint(
-            x: anchor.x + (point.x - anchor.x) * scale,
-            y: anchor.y + (point.y - anchor.y) * scale
-        ))
-    }
-
-    private func pixelDistance(
-        from first: NormalizedPoint,
-        to second: NormalizedPoint,
-        frameWidth: Int,
-        frameHeight: Int
-    ) -> Double {
-        hypot(
-            (first.x - second.x) * Double(frameWidth),
-            (first.y - second.y) * Double(frameHeight)
-        )
     }
 
     private func correctionRequiredPath(startingPoint: NormalizedPoint) -> [TrackedPoint] {

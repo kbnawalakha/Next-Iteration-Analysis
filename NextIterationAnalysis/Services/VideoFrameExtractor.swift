@@ -15,24 +15,43 @@ final class VideoFrameExtractor {
         (try? await Self.videoFrameRate(for: AVURLAsset(url: url))) ?? 30
     }
 
-    func extractFrames(from url: URL, maxFrames: Int = 120) async throws -> [VideoFrame] {
+    /// Extracts frames for tracking. By default it samples at the video's own
+    /// frame rate (one sample per source frame) so the tracked path and overlay
+    /// line up exactly with playback and so fast movement isn't skipped — the
+    /// previous fixed 160-frame cap left large gaps between samples, which made
+    /// the tracker lose the plate on quick reps. `maxFrames` only acts as a
+    /// memory safety cap for very long clips; pair it with `timeRange` (trim)
+    /// to keep full-fps fidelity on a long video.
+    func extractFrames(
+        from url: URL,
+        maxFrames: Int = 600,
+        timeRange: ClosedRange<Double>? = nil
+    ) async throws -> [VideoFrame] {
         try await Task.detached(priority: .userInitiated) {
             let asset = AVURLAsset(url: url)
-            let duration = try await asset.load(.duration).seconds
-            guard duration.isFinite, duration > 0 else { return [] }
+            let fullDuration = try await asset.load(.duration).seconds
+            guard fullDuration.isFinite, fullDuration > 0 else { return [] }
+
+            let start = max(0, timeRange?.lowerBound ?? 0)
+            let end = min(fullDuration, timeRange?.upperBound ?? fullDuration)
+            let span = end - start
+            guard span > 0 else { return [] }
 
             let fps = try await Self.videoFrameRate(for: asset)
-            let naturalFrameCount = max(1, Int(duration * max(fps, 1)))
-            let frameCount = min(maxFrames, naturalFrameCount)
+            // One sample per source frame across the (optionally trimmed) span.
+            let nativeFrameCount = max(1, Int((span * max(fps, 1)).rounded()))
+            let frameCount = min(max(1, maxFrames), nativeFrameCount)
+            let step = span / Double(frameCount)
+
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
             generator.maximumSize = CGSize(width: 640, height: 640)
-            generator.requestedTimeToleranceBefore = CMTime(seconds: 0.05, preferredTimescale: 600)
-            generator.requestedTimeToleranceAfter = CMTime(seconds: 0.05, preferredTimescale: 600)
+            generator.requestedTimeToleranceBefore = CMTime(seconds: 0.02, preferredTimescale: 600)
+            generator.requestedTimeToleranceAfter = CMTime(seconds: 0.02, preferredTimescale: 600)
 
             return (0..<frameCount).compactMap { index in
-                let progress = Double(index) / Double(max(frameCount - 1, 1))
-                let seconds = progress * duration
+                // Sample the centre of each frame interval within the span.
+                let seconds = start + (Double(index) + 0.5) * step
                 let time = CMTime(seconds: seconds, preferredTimescale: 600)
 
                 do {
