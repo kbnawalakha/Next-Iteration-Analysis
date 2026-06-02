@@ -1,11 +1,33 @@
 import AVKit
 import SwiftUI
 
+/// How the bar path line is colored. `velocity` is the documented
+/// velocity-colored gradient; `solidGreen` draws a single flat green line.
+enum BarPathColorStyle: String, CaseIterable, Identifiable {
+    case velocity
+    case solidGreen
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .velocity: return "Velocity"
+        case .solidGreen: return "Solid Green"
+        }
+    }
+}
+
 struct VideoOverlayPlayerView: View {
     let session: LiftSession
+    @Binding var colorStyle: BarPathColorStyle
     @State private var player: AVPlayer?
     @State private var playbackTime = 0.0
     @State private var timeObserver: Any?
+
+    init(session: LiftSession, colorStyle: Binding<BarPathColorStyle> = .constant(.velocity)) {
+        self.session = session
+        self._colorStyle = colorStyle
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -32,12 +54,20 @@ struct VideoOverlayPlayerView: View {
                 VelocityBarPathOverlay(
                     path: session.analysis?.trackedPath ?? [],
                     reps: session.reps,
-                    currentTime: playbackTime
+                    currentTime: playbackTime,
+                    colorStyle: colorStyle
                 )
                     .allowsHitTesting(false)
             }
             .aspectRatio(session.videoAspectRatio ?? 16 / 9, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            Picker("Bar path color", selection: $colorStyle) {
+                ForEach(BarPathColorStyle.allCases) { style in
+                    Text(style.displayName).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
 
             HStack {
                 Label("Slow playback", systemImage: "tortoise")
@@ -77,6 +107,7 @@ struct VelocityBarPathOverlay: View {
     let path: [TrackedPoint]
     var reps: Int = 1
     var currentTime: Double?
+    var colorStyle: BarPathColorStyle = .velocity
     private let calculator = LiftMetricsCalculator()
 
     var body: some View {
@@ -159,9 +190,28 @@ struct VelocityBarPathOverlay: View {
             segmentPath.addLine(to: point(segment.to, in: size))
             context.stroke(
                 segmentPath,
-                with: .color((opacity >= 1 ? Color.white : Color.gray).opacity(opacity)),
+                with: .color(Self.pathColor(for: segment.speed, style: colorStyle).opacity(opacity)),
                 style: StrokeStyle(lineWidth: opacity >= 1 ? 6 : 3, lineCap: .round, lineJoin: .round)
             )
+        }
+    }
+
+    /// Maps a normalized speed (0...1) to the bar path color for the chosen style.
+    /// `.velocity` reads vivid green while the bar is moving and shifts toward
+    /// yellow/orange/red through slow "sticking" points (the documented
+    /// velocity-colored path); `.solidGreen` always returns the same green.
+    static func pathColor(for normalizedSpeed: Double, style: BarPathColorStyle) -> Color {
+        let green = Color(hue: 1.0 / 3.0, saturation: 0.95, brightness: 0.95)
+        switch style {
+        case .solidGreen:
+            return green
+        case .velocity:
+            let speed = min(1, max(0, normalizedSpeed))
+            // Bias toward green so steady reps render predominantly green.
+            let eased = pow(speed, 0.6)
+            // SwiftUI hue space: 0.0 = red, ~0.166 = yellow, 0.333 = green.
+            let hue = eased * (1.0 / 3.0)
+            return Color(hue: hue, saturation: 0.95, brightness: 0.95)
         }
     }
 

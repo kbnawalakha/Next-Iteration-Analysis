@@ -6,6 +6,7 @@ struct AnalysisResultsView: View {
 
     @EnvironmentObject private var appState: AppState
     @State private var selectedTab = "results"
+    @State private var barPathColorStyle: BarPathColorStyle = .velocity
 
     var body: some View {
         ScrollView {
@@ -30,7 +31,7 @@ struct AnalysisResultsView: View {
 
     private var resultsContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            VideoOverlayPlayerView(session: session)
+            VideoOverlayPlayerView(session: session, colorStyle: $barPathColorStyle)
 
             MetricsView(session: session)
             TechniqueCritiqueView(critique: session.analysis?.critique)
@@ -48,7 +49,7 @@ struct AnalysisResultsView: View {
                     }
 
                     Button {
-                        Task { await analysisViewModel?.exportAnnotatedVideo() }
+                        Task { await analysisViewModel?.exportAnnotatedVideo(colorStyle: barPathColorStyle) }
                     } label: {
                         Label("Video", systemImage: "square.and.arrow.up")
                     }
