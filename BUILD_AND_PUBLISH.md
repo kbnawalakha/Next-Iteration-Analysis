@@ -76,7 +76,7 @@ Important MVP notes:
 
 - Automatic plate detection first looks for a bundled `PlateBarbellDetector.mlmodelc`, then falls back to lightweight on-device candidate scorers.
 - The Roboflow Universe `Barbell detector` project can be used as the detector source. Export or convert it to Core ML, add the compiled model to the app target as `PlateBarbellDetector.mlmodelc`, and make sure labels `0`, `1`, `barbell`, or `Barbell` are preserved.
-- Bar path tracking uses AVFoundation frame extraction plus template matching around the selected plate patch. This is suitable for an MVP and can be upgraded to Lucas-Kanade optical flow, Vision tracking, or a Core ML detector.
+- Bar path tracking uses AVFoundation frame extraction plus local plate-center fitting around the confirmed plate point. It does not globally recover with template matching; if the local fit is inconsistent or lost, the tracker freezes at low confidence instead of jumping to another object.
 - Annotated video export uses `AVAssetExportSession` and `AVVideoCompositionCoreAnimationTool` to render the velocity-colored path into an MP4.
 - Full AI video understanding is represented by `AIAnalysisService`. It posts structured metrics and pose summary to a backend, and raw video upload remains opt-in.
 

@@ -65,7 +65,13 @@ final class AutomaticPlateDetectionService {
 
         if let colorFrame = PlateColorFrame(image: image),
            let colorCandidate = colorFrame.likelyPlateCandidate() {
-            return colorCandidate
+            if let fittedCenter = LuminanceFrame(image: image)?.fittedPlate(near: colorCandidate.point)?.center {
+                return PlateDetectionResult(
+                    point: fittedCenter,
+                    confidence: colorCandidate.confidence,
+                    explanation: "Automatic detection segmented the colored plate region, then refined it to a fitted plate center. Drag to correct if needed."
+                )
+            }
         }
 
         guard let luminance = LuminanceFrame(image: image) else { return nil }
@@ -98,7 +104,9 @@ final class AutomaticPlateDetectionService {
             x: Double(box.midX),
             y: Double(1 - box.midY)
         )
-        let fittedCenter = LuminanceFrame(image: image)?.refinedPlateCenter(near: detectedCenter) ?? detectedCenter
+        guard let fittedCenter = LuminanceFrame(image: image)?.fittedPlate(near: detectedCenter)?.center else {
+            return nil
+        }
         return PlateDetectionResult(
             point: fittedCenter,
             confidence: Double(candidate.confidence),
@@ -276,7 +284,7 @@ final class BarPathTracker {
         mode: TrackingMode
     ) async -> [TrackedPoint] {
         if let videoURL = videoURL,
-           let trackedPoints = try? await trackWithTemplateMatching(videoURL: videoURL, startingPoint: startingPoint),
+           let trackedPoints = try? await trackWithPlateCenterFitting(videoURL: videoURL, startingPoint: startingPoint),
            trackingScore(trackedPoints) > 0.18 {
             return preserveInitialPoint(
                 SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints)),
@@ -284,92 +292,111 @@ final class BarPathTracker {
             )
         }
 
-        if let videoURL = videoURL,
-           let visionPoints = try? await trackWithVision(videoURL: videoURL, startingPoint: startingPoint),
-           trackingScore(visionPoints) > 0.18 {
-            return preserveInitialPoint(
-                SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(visionPoints)),
-                startingPoint: startingPoint
-            )
+        if videoURL != nil {
+            return correctionRequiredPath(startingPoint: startingPoint)
         }
 
         return simulatedPath(startingPoint: startingPoint, reps: reps, mode: mode)
     }
 
-    private func trackWithVision(
+    private func trackWithPlateCenterFitting(
         videoURL: URL,
         startingPoint: NormalizedPoint
     ) async throws -> [TrackedPoint] {
         let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 160)
-        guard !frames.isEmpty else { return [] }
-
-        let handler = VNSequenceRequestHandler()
-        let boxSize = 0.16
-        let initialBox = CGRect(
-            x: clamp(startingPoint.x - boxSize / 2, 0.01, 0.99 - boxSize),
-            y: clamp(1 - startingPoint.y - boxSize / 2, 0.01, 0.99 - boxSize),
-            width: boxSize,
-            height: boxSize
-        )
-        var observation = VNDetectedObjectObservation(boundingBox: initialBox)
-        let request = VNTrackObjectRequest(detectedObjectObservation: observation)
-        request.trackingLevel = .accurate
-
-        var trackedPoints: [TrackedPoint] = []
-        var lastPoint = startingPoint
-        var missedFrames = 0
-
-        for frame in frames {
-            do {
-                request.inputObservation = observation
-                try handler.perform([request], on: frame.image)
-                guard let result = request.results?.first as? VNDetectedObjectObservation else {
-                    missedFrames += 1
-                    trackedPoints.append(TrackedPoint(
-                        id: UUID(),
-                        timestamp: frame.timestamp,
-                        frameIndex: frame.frameIndex,
-                        x: lastPoint.x,
-                        y: lastPoint.y,
-                        confidence: 0.05
-                    ))
-                    continue
-                }
-
-                observation = result
-                let box = result.boundingBox
-                let point = NormalizedPoint(x: Double(box.midX), y: Double(1 - box.midY))
-                let confidence = Double(result.confidence)
-                lastPoint = point
-                missedFrames = confidence < 0.18 ? missedFrames + 1 : 0
-                trackedPoints.append(TrackedPoint(
-                    id: UUID(),
-                    timestamp: frame.timestamp,
-                    frameIndex: frame.frameIndex,
-                    x: point.x,
-                    y: point.y,
-                    confidence: max(0.05, min(0.98, confidence))
-                ))
-
-                if missedFrames >= 3 {
-                    observation = VNDetectedObjectObservation(boundingBox: initialBox)
-                    missedFrames = 0
-                }
-            } catch {
-                missedFrames += 1
-                trackedPoints.append(TrackedPoint(
-                    id: UUID(),
-                    timestamp: frame.timestamp,
-                    frameIndex: frame.frameIndex,
-                    x: lastPoint.x,
-                    y: lastPoint.y,
-                    confidence: 0.05
-                ))
-            }
+        guard let firstFrame = frames.first,
+              let firstLuminance = LuminanceFrame(image: firstFrame.image) else {
+            return []
         }
 
-        let averageConfidence = trackedPoints.map(\.confidence).reduce(0, +) / Double(max(trackedPoints.count, 1))
-        return averageConfidence > 0.14 ? trackedPoints : []
+        let anchorSearchRadius = max(10, min(firstLuminance.width, firstLuminance.height) / 12)
+        guard let initialFit = firstLuminance.fittedPlate(
+            near: startingPoint,
+            maxCenterDistancePixels: Double(anchorSearchRadius)
+        ) else {
+            return []
+        }
+
+        var previousPoint = initialFit.center
+        var previousRadius = initialFit.radiusPixels
+        var velocity = NormalizedPoint(x: 0, y: 0)
+        var missedFrames = 0
+        var trackedPoints: [TrackedPoint] = [
+            TrackedPoint(
+                id: UUID(),
+                timestamp: firstFrame.timestamp,
+                frameIndex: firstFrame.frameIndex,
+                x: previousPoint.x,
+                y: previousPoint.y,
+                confidence: max(0.72, initialFit.confidence)
+            )
+        ]
+
+        for frame in frames.dropFirst() {
+            guard let luminance = LuminanceFrame(image: frame.image) else { continue }
+            let maxJumpPixels = max(10, min(60, previousRadius * 1.15))
+            let predictedPoint = pointWithinPixelRadius(
+                clamped(NormalizedPoint(
+                    x: previousPoint.x + velocity.x,
+                    y: previousPoint.y + velocity.y
+                )),
+                anchor: previousPoint,
+                maxPixels: maxJumpPixels,
+                frameWidth: luminance.width,
+                frameHeight: luminance.height
+            )
+
+            let refit = luminance.fittedPlate(
+                near: predictedPoint,
+                expectedRadiusPixels: previousRadius,
+                maxCenterDistancePixels: maxJumpPixels
+            )
+
+            guard let fit = refit,
+                  isConsistentPlateFit(
+                    fit,
+                    previousPoint: previousPoint,
+                    previousRadiusPixels: previousRadius,
+                    maxJumpPixels: maxJumpPixels,
+                    frameWidth: luminance.width,
+                    frameHeight: luminance.height
+                  ) else {
+                missedFrames += 1
+                velocity = NormalizedPoint(x: velocity.x * 0.35, y: velocity.y * 0.35)
+                trackedPoints.append(TrackedPoint(
+                    id: UUID(),
+                    timestamp: frame.timestamp,
+                    frameIndex: frame.frameIndex,
+                    x: previousPoint.x,
+                    y: previousPoint.y,
+                    confidence: missedFrames <= 5 ? 0.12 : 0.04
+                ))
+                continue
+            }
+
+            let nextVelocity = NormalizedPoint(
+                x: fit.center.x - previousPoint.x,
+                y: fit.center.y - previousPoint.y
+            )
+            velocity = NormalizedPoint(
+                x: velocity.x * 0.72 + nextVelocity.x * 0.28,
+                y: velocity.y * 0.72 + nextVelocity.y * 0.28
+            )
+            previousPoint = fit.center
+            previousRadius = previousRadius * 0.82 + fit.radiusPixels * 0.18
+            missedFrames = 0
+
+            trackedPoints.append(TrackedPoint(
+                id: UUID(),
+                timestamp: frame.timestamp,
+                frameIndex: frame.frameIndex,
+                x: fit.center.x,
+                y: fit.center.y,
+                confidence: max(0.2, min(0.96, fit.confidence))
+            ))
+        }
+
+        return trackedPoints
     }
 
     private func trackingScore(_ points: [TrackedPoint]) -> Double {
@@ -389,105 +416,6 @@ final class BarPathTracker {
             confidence: max(first.confidence, 0.82)
         )
         return corrected
-    }
-
-    private func trackWithTemplateMatching(
-        videoURL: URL,
-        startingPoint: NormalizedPoint
-    ) async throws -> [TrackedPoint] {
-        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 120)
-        guard let firstFrame = frames.first,
-              let firstLuminance = LuminanceFrame(image: firstFrame.image) else {
-            return []
-        }
-
-        let initialCenter = firstLuminance.refinedPlateCenter(near: startingPoint) ?? startingPoint
-        let patchRadius = max(5, min(firstLuminance.width, firstLuminance.height) / 34)
-        guard var template = firstLuminance.patch(center: initialCenter, radius: patchRadius) else {
-            return []
-        }
-
-        var previousPoint = initialCenter
-        var velocity = NormalizedPoint(x: 0, y: 0)
-        let searchRadius = min(60, max(12, min(firstLuminance.width, firstLuminance.height) / 4))
-        let confidenceGate = 0.62
-        var trackedPoints: [TrackedPoint] = []
-        var missedFrames = 0
-
-        for frame in frames {
-            guard let luminance = LuminanceFrame(image: frame.image) else { continue }
-
-            let predictedPoint = clamped(NormalizedPoint(
-                x: previousPoint.x + velocity.x,
-                y: previousPoint.y + velocity.y
-            ))
-
-            let localMatch = luminance.bestMatch(
-                template: template,
-                radius: patchRadius,
-                around: predictedPoint,
-                searchRadius: searchRadius
-            )
-            let refitMatch = circleRefitMatch(
-                in: luminance,
-                predictedPoint: predictedPoint,
-                previousPoint: previousPoint,
-                searchRadius: searchRadius
-            )
-            let trackingMatch = bestRecoverableMatch(localMatch, refitMatch: refitMatch, confidenceGate: confidenceGate)
-
-            guard let match = trackingMatch else {
-                missedFrames += 1
-                previousPoint = clamped(interpolatedPoint(
-                    previous: previousPoint,
-                    predicted: predictedPoint,
-                    missedFrames: missedFrames
-                ))
-                trackedPoints.append(TrackedPoint(
-                    id: UUID(),
-                    timestamp: frame.timestamp,
-                    frameIndex: frame.frameIndex,
-                    x: previousPoint.x,
-                    y: previousPoint.y,
-                    confidence: 0.05
-                ))
-                continue
-            }
-
-            var center = match.point
-            if let refinedCenter = luminance.refinedPlateCenter(near: center),
-               distance(from: refinedCenter, to: center) < 0.045 {
-                center = refinedCenter
-            }
-
-            let nextVelocity = NormalizedPoint(
-                x: center.x - previousPoint.x,
-                y: center.y - previousPoint.y
-            )
-            let reacquired = missedFrames > 0
-            velocity = NormalizedPoint(
-                x: reacquired ? nextVelocity.x * 0.25 : velocity.x * 0.65 + nextVelocity.x * 0.35,
-                y: reacquired ? nextVelocity.y * 0.25 : velocity.y * 0.65 + nextVelocity.y * 0.35
-            )
-            previousPoint = center
-            missedFrames = 0
-
-            if frame.frameIndex % 10 == 0,
-               let freshPatch = luminance.patch(center: center, radius: patchRadius) {
-                template = blend(template, with: freshPatch, newWeight: 0.22)
-            }
-
-            trackedPoints.append(TrackedPoint(
-                id: UUID(),
-                timestamp: frame.timestamp,
-                frameIndex: frame.frameIndex,
-                x: center.x,
-                y: center.y,
-                confidence: max(0.05, match.confidence)
-            ))
-        }
-
-        return trackedPoints
     }
 
     private func simulatedPath(startingPoint: NormalizedPoint, reps: Int, mode: TrackingMode) -> [TrackedPoint] {
@@ -523,57 +451,73 @@ final class BarPathTracker {
         NormalizedPoint(x: clamp(point.x, 0.02, 0.98), y: clamp(point.y, 0.02, 0.98))
     }
 
-    private func distance(from first: NormalizedPoint, to second: NormalizedPoint) -> Double {
-        hypot(first.x - second.x, first.y - second.y)
+    private func isConsistentPlateFit(
+        _ fit: PlateFit,
+        previousPoint: NormalizedPoint,
+        previousRadiusPixels: Double,
+        maxJumpPixels: Double,
+        frameWidth: Int,
+        frameHeight: Int
+    ) -> Bool {
+        let distancePixels = pixelDistance(
+            from: fit.center,
+            to: previousPoint,
+            frameWidth: frameWidth,
+            frameHeight: frameHeight
+        )
+        let radiusRatio = fit.radiusPixels / max(previousRadiusPixels, 1)
+        let areaRatio = fit.areaPixels / max(Double.pi * previousRadiusPixels * previousRadiusPixels, 1)
+
+        return distancePixels <= maxJumpPixels
+            && radiusRatio >= 0.58
+            && radiusRatio <= 1.58
+            && areaRatio >= 0.34
+            && areaRatio <= 2.5
+            && fit.circularity >= 0.18
+            && fit.confidence >= 0.2
     }
 
-    private func interpolatedPoint(
-        previous: NormalizedPoint,
-        predicted: NormalizedPoint,
-        missedFrames: Int
+    private func pointWithinPixelRadius(
+        _ point: NormalizedPoint,
+        anchor: NormalizedPoint,
+        maxPixels: Double,
+        frameWidth: Int,
+        frameHeight: Int
     ) -> NormalizedPoint {
-        let blendWeight = min(0.35, Double(missedFrames) * 0.08)
-        return NormalizedPoint(
-            x: previous.x * (1 - blendWeight) + predicted.x * blendWeight,
-            y: previous.y * (1 - blendWeight) + predicted.y * blendWeight
+        let dx = (point.x - anchor.x) * Double(frameWidth)
+        let dy = (point.y - anchor.y) * Double(frameHeight)
+        let distance = hypot(dx, dy)
+        guard distance > maxPixels, distance > 0 else { return point }
+        let scale = maxPixels / distance
+        return clamped(NormalizedPoint(
+            x: anchor.x + (point.x - anchor.x) * scale,
+            y: anchor.y + (point.y - anchor.y) * scale
+        ))
+    }
+
+    private func pixelDistance(
+        from first: NormalizedPoint,
+        to second: NormalizedPoint,
+        frameWidth: Int,
+        frameHeight: Int
+    ) -> Double {
+        hypot(
+            (first.x - second.x) * Double(frameWidth),
+            (first.y - second.y) * Double(frameHeight)
         )
     }
 
-    private func circleRefitMatch(
-        in luminance: LuminanceFrame,
-        predictedPoint: NormalizedPoint,
-        previousPoint: NormalizedPoint,
-        searchRadius: Int
-    ) -> (point: NormalizedPoint, confidence: Double)? {
-        guard let refit = luminance.refinedPlateCenter(near: predictedPoint) else { return nil }
-        let pixelDistance = distance(from: refit, to: previousPoint) * Double(max(luminance.width, luminance.height))
-        guard pixelDistance <= Double(searchRadius) else { return nil }
-        return (refit, 0.66)
-    }
-
-    private func bestRecoverableMatch(
-        _ localMatch: (point: NormalizedPoint, confidence: Double)?,
-        refitMatch: (point: NormalizedPoint, confidence: Double)?,
-        confidenceGate: Double
-    ) -> (point: NormalizedPoint, confidence: Double)? {
-        let gatedLocal = (localMatch?.confidence ?? 0) >= confidenceGate ? localMatch : nil
-        switch (gatedLocal, refitMatch) {
-        case let (local?, refit?) where refit.confidence > local.confidence:
-            return refit
-        case let (local?, _):
-            return local
-        case let (nil, refit?):
-            return refit
-        default:
-            return nil
-        }
-    }
-
-    private func blend(_ template: [UInt8], with freshPatch: [UInt8], newWeight: Double) -> [UInt8] {
-        guard template.count == freshPatch.count else { return template }
-        return zip(template, freshPatch).map { old, new in
-            UInt8((Double(old) * (1 - newWeight) + Double(new) * newWeight).rounded())
-        }
+    private func correctionRequiredPath(startingPoint: NormalizedPoint) -> [TrackedPoint] {
+        [
+            TrackedPoint(
+                id: UUID(),
+                timestamp: 0,
+                frameIndex: 0,
+                x: startingPoint.x,
+                y: startingPoint.y,
+                confidence: 0.03
+            )
+        ]
     }
 
 }

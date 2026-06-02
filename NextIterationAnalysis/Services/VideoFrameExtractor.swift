@@ -110,62 +110,6 @@ struct LuminanceFrame {
         self.pixels = buffer
     }
 
-    func patch(center: NormalizedPoint, radius: Int) -> [UInt8]? {
-        let centerX = Int(center.x * Double(width))
-        let centerY = Int(center.y * Double(height))
-        guard centerX - radius >= 0, centerY - radius >= 0, centerX + radius < width, centerY + radius < height else {
-            return nil
-        }
-
-        var patch: [UInt8] = []
-        patch.reserveCapacity((radius * 2 + 1) * (radius * 2 + 1))
-        for y in (centerY - radius)...(centerY + radius) {
-            let offset = y * width
-            for x in (centerX - radius)...(centerX + radius) {
-                patch.append(pixels[offset + x])
-            }
-        }
-        return patch
-    }
-
-    func bestMatch(
-        template: [UInt8],
-        radius: Int,
-        around previous: NormalizedPoint,
-        searchRadius: Int
-    ) -> (point: NormalizedPoint, confidence: Double)? {
-        guard template.count == (radius * 2 + 1) * (radius * 2 + 1) else { return nil }
-
-        let previousX = Int(previous.x * Double(width))
-        let previousY = Int(previous.y * Double(height))
-        let minX = max(radius, previousX - searchRadius)
-        let maxX = min(width - radius - 1, previousX + searchRadius)
-        let minY = max(radius, previousY - searchRadius)
-        let maxY = min(height - radius - 1, previousY + searchRadius)
-        guard minX <= maxX, minY <= maxY else { return nil }
-
-        var bestCorrelation = -Double.greatestFiniteMagnitude
-        var bestX = previousX
-        var bestY = previousY
-
-        for y in stride(from: minY, through: maxY, by: 2) {
-            for x in stride(from: minX, through: maxX, by: 2) {
-                let correlation = normalizedCrossCorrelation(template: template, centerX: x, centerY: y, radius: radius)
-                if correlation > bestCorrelation {
-                    bestCorrelation = correlation
-                    bestX = x
-                    bestY = y
-                }
-            }
-        }
-
-        let confidence = max(0.05, min(0.98, (bestCorrelation + 1) / 2))
-        return (
-            NormalizedPoint(x: Double(bestX) / Double(width), y: Double(bestY) / Double(height)),
-            confidence
-        )
-    }
-
     func likelyPlateCandidate() -> PlateDetectionResult? {
         let radius = max(7, min(width, height) / 22)
         var bestScore = 0.0
@@ -196,61 +140,56 @@ struct LuminanceFrame {
     }
 
     func refinedPlateCenter(near point: NormalizedPoint) -> NormalizedPoint? {
+        fittedPlate(near: point)?.center
+    }
+
+    func fittedPlate(
+        near point: NormalizedPoint,
+        expectedRadiusPixels: Double? = nil,
+        maxCenterDistancePixels: Double? = nil
+    ) -> PlateFit? {
         let approximateRadius = max(7, min(width, height) / 22)
         let centerX = Int(point.x * Double(width))
         let centerY = Int(point.y * Double(height))
-        let searchRadius = max(6, approximateRadius / 2)
+        let searchRadius = Int(max(6, min(maxCenterDistancePixels ?? Double(approximateRadius), Double(approximateRadius) * 1.4)))
+        let expectedRadius = expectedRadiusPixels ?? Double(approximateRadius)
+        let radii = [
+            max(5, Int((expectedRadius * 0.82).rounded())),
+            max(5, Int(expectedRadius.rounded())),
+            max(5, Int((expectedRadius * 1.18).rounded()))
+        ]
 
         var bestScore = 0.0
-        var bestPoint: NormalizedPoint?
+        var bestFit: PlateFit?
 
         for y in stride(from: centerY - searchRadius, through: centerY + searchRadius, by: 2) {
             for x in stride(from: centerX - searchRadius, through: centerX + searchRadius, by: 2) {
-                let score = circularContrastScore(centerX: x, centerY: y, radius: approximateRadius)
-                if score > bestScore {
-                    bestScore = score
-                    bestPoint = NormalizedPoint(x: Double(x) / Double(width), y: Double(y) / Double(height))
+                for radius in radii {
+                    let contrast = circularContrastScore(centerX: x, centerY: y, radius: radius)
+                    let circularity = radialEdgeConsistency(centerX: x, centerY: y, radius: radius)
+                    let radiusPenalty = expectedRadiusPixels.map { max(0, 1 - abs(Double(radius) - $0) / max($0, 1)) } ?? 1
+                    let score = contrast * 0.58 + circularity * 0.28 + radiusPenalty * 0.14
+                    if score > bestScore {
+                        bestScore = score
+                        bestFit = PlateFit(
+                            center: NormalizedPoint(x: Double(x) / Double(width), y: Double(y) / Double(height)),
+                            radiusPixels: Double(radius),
+                            circularity: circularity,
+                            areaPixels: Double.pi * Double(radius * radius),
+                            confidence: max(0.05, min(0.96, score))
+                        )
+                    }
                 }
             }
         }
 
-        guard bestScore > 0.1 else { return nil }
-        return bestPoint
-    }
-
-    private func normalizedCrossCorrelation(template: [UInt8], centerX: Int, centerY: Int, radius: Int) -> Double {
-        let count = max(template.count, 1)
-        let templateMean = template.reduce(0) { $0 + Double($1) } / Double(count)
-        var patchMean = 0.0
-        var index = 0
-        for y in (centerY - radius)...(centerY + radius) {
-            let offset = y * width
-            for x in (centerX - radius)...(centerX + radius) {
-                patchMean += Double(pixels[offset + x])
-                index += 1
-            }
+        guard let bestFit,
+              bestScore > 0.18,
+              bestFit.circularity > 0.18,
+              bestFit.areaPixels > 80 else {
+            return nil
         }
-        patchMean /= Double(count)
-
-        index = 0
-        var numerator = 0.0
-        var templateVariance = 0.0
-        var patchVariance = 0.0
-        for y in (centerY - radius)...(centerY + radius) {
-            let offset = y * width
-            for x in (centerX - radius)...(centerX + radius) {
-                let templateDelta = Double(template[index]) - templateMean
-                let patchDelta = Double(pixels[offset + x]) - patchMean
-                numerator += templateDelta * patchDelta
-                templateVariance += templateDelta * templateDelta
-                patchVariance += patchDelta * patchDelta
-                index += 1
-            }
-        }
-
-        let denominator = sqrt(templateVariance * patchVariance)
-        guard denominator > 0 else { return -1 }
-        return numerator / denominator
+        return bestFit
     }
 
     private func circularContrastScore(centerX: Int, centerY: Int, radius: Int) -> Double {
@@ -289,4 +228,43 @@ struct LuminanceFrame {
         let darknessBias = max(0, 1 - inner / 255)
         return contrast * 0.75 + darknessBias * 0.25
     }
+
+    private func radialEdgeConsistency(centerX: Int, centerY: Int, radius: Int) -> Double {
+        guard centerX - radius * 2 >= 0, centerY - radius * 2 >= 0,
+              centerX + radius * 2 < width, centerY + radius * 2 < height else {
+            return 0
+        }
+
+        let sampleCount = 32
+        var scores: [Double] = []
+        scores.reserveCapacity(sampleCount)
+
+        for index in 0..<sampleCount {
+            let angle = Double(index) / Double(sampleCount) * .pi * 2
+            let dx = cos(angle)
+            let dy = sin(angle)
+            let innerX = centerX + Int((Double(radius) * 0.62 * dx).rounded())
+            let innerY = centerY + Int((Double(radius) * 0.62 * dy).rounded())
+            let ringX = centerX + Int((Double(radius) * dx).rounded())
+            let ringY = centerY + Int((Double(radius) * dy).rounded())
+            let outerX = centerX + Int((Double(radius) * 1.36 * dx).rounded())
+            let outerY = centerY + Int((Double(radius) * 1.36 * dy).rounded())
+            let inner = Double(pixels[innerY * width + innerX])
+            let ring = Double(pixels[ringY * width + ringX])
+            let outer = Double(pixels[outerY * width + outerX])
+            scores.append(min(1, abs(ring - inner) / 90) * 0.55 + min(1, abs(ring - outer) / 90) * 0.45)
+        }
+
+        let mean = scores.reduce(0, +) / Double(scores.count)
+        let coverage = Double(scores.filter { $0 > 0.12 }.count) / Double(sampleCount)
+        return min(1, mean * 0.55 + coverage * 0.45)
+    }
+}
+
+struct PlateFit {
+    let center: NormalizedPoint
+    let radiusPixels: Double
+    let circularity: Double
+    let areaPixels: Double
+    let confidence: Double
 }

@@ -29,4 +29,6 @@ The app can use the Roboflow Universe [Barbell detector](https://universe.robofl
 PlateBarbellDetector.mlmodelc
 ```
 
-`AutomaticPlateDetectionService` will use that model first, accepting Roboflow labels `0`, `1`, `barbell`, and `Barbell`. The detector bounding box is only used as the initial region; the app then refines the point with plate-center fitting before showing the user the draggable confirmation marker.
+`AutomaticPlateDetectionService` will use that model first, accepting Roboflow labels `0`, `1`, `barbell`, and `Barbell`. The detector bounding box is only used as the initial region; the app must refine the point with plate-center fitting before showing the user the draggable confirmation marker.
+
+The video tracker follows only the fitted plate center. It searches near the previous center, rejects radius/circularity/area/distance outliers, and freezes briefly at low confidence when the plate cannot be refit instead of jumping to unrelated background objects.
