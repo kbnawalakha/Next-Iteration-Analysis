@@ -99,14 +99,14 @@ struct PointSelectionView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { location in
-                let clampedX = min(max(location.x, imageRect.minX), imageRect.maxX)
-                let clampedY = min(max(location.y, imageRect.minY), imageRect.maxY)
-                viewModel.selectedPoint = NormalizedPoint(
-                    x: Double((clampedX - imageRect.minX) / max(imageRect.width, 1)),
-                    y: Double((clampedY - imageRect.minY) / max(imageRect.height, 1))
-                )
-                viewModel.markManuallyAdjusted()
+                updateSelection(location: location, imageRect: imageRect)
             }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        updateSelection(location: value.location, imageRect: imageRect)
+                    }
+            )
         }
         .aspectRatio(importedVideo?.metadata.aspectRatio ?? 16 / 9, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -124,5 +124,15 @@ struct PointSelectionView: View {
             let height = container.width / max(aspectRatio, 0.001)
             return CGRect(x: 0, y: (container.height - height) / 2, width: container.width, height: height)
         }
+    }
+
+    private func updateSelection(location: CGPoint, imageRect: CGRect) {
+        let clampedX = min(max(location.x, imageRect.minX), imageRect.maxX)
+        let clampedY = min(max(location.y, imageRect.minY), imageRect.maxY)
+        viewModel.selectedPoint = NormalizedPoint(
+            x: Double((clampedX - imageRect.minX) / max(imageRect.width, 1)),
+            y: Double((clampedY - imageRect.minY) / max(imageRect.height, 1))
+        )
+        viewModel.markManuallyAdjusted()
     }
 }

@@ -34,8 +34,12 @@ final class AnnotatedVideoExportService {
 
         let overlayRenderer = AnnotatedVideoOverlayRenderer(path: analysis.trackedPath, reps: session.reps)
         let videoComposition = AVMutableVideoComposition(asset: asset) { request in
-            let source = request.sourceImage.clampedToExtent()
+            let source = request.sourceImage
             let extent = source.extent
+            guard extent.width.isFinite, extent.height.isFinite, extent.width > 0, extent.height > 0 else {
+                request.finish(with: source, context: nil)
+                return
+            }
             let overlay = overlayRenderer.overlayImage(
                 size: extent.size,
                 extent: extent,
@@ -100,6 +104,9 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
     }
 
     func overlayImage(size: CGSize, extent: CGRect, currentTime: Double? = nil) -> CIImage {
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else {
+            return CIImage.empty()
+        }
         let visiblePath = visiblePath(through: currentTime)
         let cacheFrame = visiblePath.last?.frameIndex ?? -1
         let cacheKey = "\(Int(size.width))x\(Int(size.height))-\(visiblePath.count)-\(cacheFrame)-\(reps)"
