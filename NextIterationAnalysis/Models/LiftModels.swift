@@ -61,18 +61,30 @@ enum AnalysisQuality: String, Codable, CaseIterable, Identifiable {
 
     var trackingFrameLimit: Int {
         switch self {
-        case .fast: return 240
-        case .balanced: return 480
-        case .accurate: return 900
+        case .fast: return 120
+        case .balanced: return 240
+        case .accurate: return 600
         }
     }
 
     var poseFrameLimit: Int {
         switch self {
-        case .fast: return 24
-        case .balanced: return 48
+        case .fast: return 12
+        case .balanced: return 36
         case .accurate: return 90
         }
+    }
+
+    var frameExtractionMaxDimension: Int {
+        switch self {
+        case .fast: return 360
+        case .balanced: return 480
+        case .accurate: return 640
+        }
+    }
+
+    var usesExactFrameTiming: Bool {
+        self == .accurate
     }
 }
 

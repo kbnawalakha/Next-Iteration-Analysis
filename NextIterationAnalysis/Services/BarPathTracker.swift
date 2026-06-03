@@ -403,14 +403,18 @@ final class BarPathTracker {
         reps: Int,
         mode: TrackingMode,
         timeRange: ClosedRange<Double>? = nil,
-        maxFrames: Int = 900
+        maxFrames: Int = 900,
+        frameMaxDimension: Int = 640,
+        usesExactFrameTiming: Bool = true
     ) async -> [TrackedPoint] {
         if let videoURL = videoURL,
            let trackedPoints = try? await trackPlate(
                 videoURL: videoURL,
                 startingPoint: startingPoint,
                 timeRange: timeRange,
-                maxFrames: maxFrames
+                maxFrames: maxFrames,
+                frameMaxDimension: frameMaxDimension,
+                usesExactFrameTiming: usesExactFrameTiming
            ),
            trackingScore(trackedPoints) > 0.18 {
             return preserveRefinedStartPoint(trackedPoints, refinedStart: trackedPoints.first)
@@ -434,12 +438,20 @@ final class BarPathTracker {
         videoURL: URL,
         startingPoint: NormalizedPoint,
         timeRange: ClosedRange<Double>? = nil,
-        maxFrames: Int = 900
+        maxFrames: Int = 900,
+        frameMaxDimension: Int = 640,
+        usesExactFrameTiming: Bool = true
     ) async throws -> [TrackedPoint] {
         // Cap total processed frames for speed (and bound memory). Native fps is
         // preserved for typical-length clips; long clips decimate — trim to keep
         // full fidelity. A smaller processing resolution speeds up per-frame work.
-        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: maxFrames, timeRange: timeRange)
+        let frames = try await frameExtractor.extractFrames(
+            from: videoURL,
+            maxFrames: maxFrames,
+            timeRange: timeRange,
+            maxImageDimension: frameMaxDimension,
+            usesExactTiming: usesExactFrameTiming
+        )
         let colorMaxWidth = 200
         guard let firstFrame = frames.first,
               let firstLuminance = LuminanceFrame(image: firstFrame.image) else {
@@ -497,7 +509,15 @@ final class BarPathTracker {
                         return (ratio >= 0.2 && ratio <= 5) ? 1 : 0.25
                     }
 
-                    let scored = components.map { component -> (NormalizedPoint, Double) in
+                    let candidateComponents = components
+                        .sorted { lhs, rhs in
+                            let lhsDistance = squaredDistance(lhs.center, predicted)
+                            let rhsDistance = squaredDistance(rhs.center, predicted)
+                            return lhsDistance == rhsDistance ? lhs.area > rhs.area : lhsDistance < rhsDistance
+                        }
+                        .prefix(8)
+
+                    let scored = candidateComponents.map { component -> (NormalizedPoint, Double) in
                         let fitted = luminance?.fittedPlate(
                             near: component.center,
                             expectedRadiusPixels: initialFit?.radiusPixels,
@@ -529,7 +549,7 @@ final class BarPathTracker {
                let luminance,
                let fit = luminance.fittedPlate(
                     near: predicted,
-                    maxCenterDistancePixels: Double(max(luminance.width, luminance.height))
+                    maxCenterDistancePixels: Double(max(18, min(luminance.width, luminance.height) / 7))
                ) {
                 chosen = fit.center
                 chosenConfidence = max(0.2, min(0.9, fit.confidence))
@@ -619,6 +639,12 @@ final class BarPathTracker {
 
     private func clamped(_ point: NormalizedPoint) -> NormalizedPoint {
         NormalizedPoint(x: clamp(point.x, 0.02, 0.98), y: clamp(point.y, 0.02, 0.98))
+    }
+
+    private func squaredDistance(_ lhs: NormalizedPoint, _ rhs: NormalizedPoint) -> Double {
+        let dx = lhs.x - rhs.x
+        let dy = lhs.y - rhs.y
+        return dx * dx + dy * dy
     }
 
     private func correctionRequiredPath(startingPoint: NormalizedPoint) -> [TrackedPoint] {

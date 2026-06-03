@@ -25,7 +25,9 @@ final class VideoFrameExtractor {
     func extractFrames(
         from url: URL,
         maxFrames: Int = 600,
-        timeRange: ClosedRange<Double>? = nil
+        timeRange: ClosedRange<Double>? = nil,
+        maxImageDimension: Int = 640,
+        usesExactTiming: Bool = true
     ) async throws -> [VideoFrame] {
         try await Task.detached(priority: .userInitiated) {
             let asset = AVURLAsset(url: url)
@@ -45,9 +47,13 @@ final class VideoFrameExtractor {
 
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 640, height: 640)
-            generator.requestedTimeToleranceBefore = .zero
-            generator.requestedTimeToleranceAfter = .zero
+            let boundedMaxDimension = max(160, maxImageDimension)
+            generator.maximumSize = CGSize(width: CGFloat(boundedMaxDimension), height: CGFloat(boundedMaxDimension))
+            let tolerance = usesExactTiming
+                ? CMTime.zero
+                : CMTime(seconds: max(0.01, step * 0.5), preferredTimescale: 600)
+            generator.requestedTimeToleranceBefore = tolerance
+            generator.requestedTimeToleranceAfter = tolerance
 
             return (0..<frameCount).compactMap { index in
                 // Sample the centre of each frame interval within the span.

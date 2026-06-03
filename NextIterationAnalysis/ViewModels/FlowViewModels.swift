@@ -148,7 +148,9 @@ final class AnalysisViewModel: ObservableObject {
                 reps: details.reps,
                 mode: trackingMode,
                 timeRange: nil,
-                maxFrames: analysisQuality.trackingFrameLimit
+                maxFrames: analysisQuality.trackingFrameLimit,
+                frameMaxDimension: analysisQuality.frameExtractionMaxDimension,
+                usesExactFrameTiming: analysisQuality.usesExactFrameTiming
             )
 
             try await step(.calculatingMetrics)
