@@ -42,43 +42,33 @@ struct AnalysisResultsView: View {
     let session: LiftSession
     var analysisViewModel: AnalysisViewModel?
 
-    @EnvironmentObject private var appState: AppState
-    @State private var selectedTab = "video"
     @State private var colorStyle: BarPathColorStyle = .velocity
     @StateObject private var exporter = SessionExportController()
 
     var body: some View {
-        VStack(spacing: 12) {
-            Picker("View", selection: $selectedTab) {
-                Text("Video").tag("video")
-                Text("Stats").tag("stats")
-                Text("Compare").tag("compare")
-            }
-            .pickerStyle(.segmented)
-            .padding([.horizontal, .top])
-
-            switch selectedTab {
-            case "compare":
-                ScrollView {
-                    SideBySideComparisonView(current: session, previous: previousComparableSession)
-                        .padding()
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    videoSection(minHeight: proxy.size.height * 0.5)
+                    statsSection
                 }
-            case "stats":
-                statsTab
-            default:
-                videoTab
+                .padding()
             }
         }
         .navigationTitle(session.liftType.displayName)
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    // MARK: - Video tab (fills the screen so there's nothing to scroll)
+    // MARK: - Video and export
 
-    private var videoTab: some View {
-        VStack(spacing: 10) {
-            VideoOverlayPlayerView(session: session, colorStyle: $colorStyle)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+    private func videoSection(minHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VideoOverlayPlayerView(
+                session: session,
+                colorStyle: $colorStyle,
+                minVideoHeight: max(260, minHeight)
+            )
+                .frame(maxWidth: .infinity)
 
             HStack(spacing: 12) {
                 Button {
@@ -114,30 +104,23 @@ struct AnalysisResultsView: View {
                     .lineLimit(2)
             }
         }
-        .padding([.horizontal, .bottom])
     }
 
-    // MARK: - Stats tab (reps, metrics, critique, recommendation)
+    // MARK: - Stats (reps, metrics, critique, recommendation)
 
-    private var statsTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                MetricsView(session: session)
-                TechniqueCritiqueView(critique: session.analysis?.critique)
-                RecommendationView(session: session)
+    private var statsSection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            MetricsView(session: session)
+            TechniqueCritiqueView(critique: session.analysis?.critique)
+            RecommendationView(session: session)
 
-                Text("This analysis is an estimate based on video and may be inaccurate. Use it as a training aid, not as medical advice or a replacement for a qualified coach. Stop lifting if you feel pain or unsafe.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding()
-                    .background(Color.yellow.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .padding()
+            Text("This analysis is an estimate based on video and may be inaccurate. Use it as a training aid, not as medical advice or a replacement for a qualified coach. Stop lifting if you feel pain or unsafe.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .padding()
+                .background(Color.yellow.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 
-    private var previousComparableSession: LiftSession? {
-        appState.sessions.first { $0.id != session.id && $0.liftType == session.liftType }
-    }
 }

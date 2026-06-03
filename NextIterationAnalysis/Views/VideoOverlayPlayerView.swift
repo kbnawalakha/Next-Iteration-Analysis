@@ -20,13 +20,19 @@ enum BarPathColorStyle: String, CaseIterable, Identifiable {
 struct VideoOverlayPlayerView: View {
     let session: LiftSession
     @Binding var colorStyle: BarPathColorStyle
+    var minVideoHeight: CGFloat?
     @State private var player: AVPlayer?
     @State private var playbackTime = 0.0
     @State private var timeObserver: Any?
 
-    init(session: LiftSession, colorStyle: Binding<BarPathColorStyle> = .constant(.velocity)) {
+    init(
+        session: LiftSession,
+        colorStyle: Binding<BarPathColorStyle> = .constant(.velocity),
+        minVideoHeight: CGFloat? = nil
+    ) {
         self.session = session
         self._colorStyle = colorStyle
+        self.minVideoHeight = minVideoHeight
     }
 
     var body: some View {
@@ -60,6 +66,7 @@ struct VideoOverlayPlayerView: View {
                     .allowsHitTesting(false)
             }
             .aspectRatio(session.videoAspectRatio ?? 16 / 9, contentMode: .fit)
+            .frame(minHeight: minVideoHeight)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             Picker("Bar path color", selection: $colorStyle) {

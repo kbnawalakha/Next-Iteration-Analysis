@@ -59,34 +59,46 @@ final class AnnotatedVideoExportService {
         videoComposition.renderSize = renderSize
         videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, Int(round(fps)))))
 
-        let destination = try storage.makeExportURL(fileName: "\(session.liftType.rawValue)-annotated-\(session.id.uuidString.prefix(8)).mp4")
+        let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
+        let preset: String
+        if compatiblePresets.contains(AVAssetExportPresetHighestQuality) {
+            preset = AVAssetExportPresetHighestQuality
+        } else if compatiblePresets.contains(AVAssetExportPreset1280x720) {
+            preset = AVAssetExportPreset1280x720
+        } else if compatiblePresets.contains(AVAssetExportPresetMediumQuality) {
+            preset = AVAssetExportPresetMediumQuality
+        } else {
+            preset = compatiblePresets.first ?? AVAssetExportPresetHighestQuality
+        }
+
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: preset) else {
+            throw ExportError.exportFailed
+        }
+
+        let outputType: AVFileType = exportSession.supportedFileTypes.contains(.mp4) ? .mp4 : .mov
+        let fileExtension = outputType == .mp4 ? "mp4" : "mov"
+        let destination = try storage.makeExportURL(fileName: "\(session.liftType.rawValue)-annotated-\(session.id.uuidString.prefix(8)).\(fileExtension)")
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
 
-        guard let exportSession = AVAssetExportSession(
-            asset: asset,
-            presetName: AVAssetExportPresetHighestQuality
-        ) else {
-            throw ExportError.exportFailed
-        }
-
         exportSession.outputURL = destination
-        exportSession.outputFileType = .mp4
+        exportSession.outputFileType = outputType
         exportSession.videoComposition = videoComposition
+        exportSession.shouldOptimizeForNetworkUse = true
 
         let exportBox = ExportSessionBox(exportSession)
-        try await withCheckedThrowingContinuation { continuation in
-            exportBox.session.exportAsynchronously {
-                switch exportBox.session.status {
-                case .completed:
-                    continuation.resume()
-                case .failed, .cancelled:
-                    continuation.resume(throwing: exportBox.session.error ?? ExportError.exportFailed)
-                default:
-                    continuation.resume(throwing: ExportError.exportFailed)
-                }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await exportBox.export()
             }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 90_000_000_000)
+                exportBox.session.cancelExport()
+                throw ExportError.exportTimedOut
+            }
+            try await group.next()
+            group.cancelAll()
         }
 
         return destination
@@ -98,6 +110,21 @@ private final class ExportSessionBox: @unchecked Sendable {
 
     init(_ session: AVAssetExportSession) {
         self.session = session
+    }
+
+    func export() async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            session.exportAsynchronously {
+                switch self.session.status {
+                case .completed:
+                    continuation.resume()
+                case .failed, .cancelled:
+                    continuation.resume(throwing: self.session.error ?? ExportError.exportFailed)
+                default:
+                    continuation.resume(throwing: ExportError.exportFailed)
+                }
+            }
+        }
     }
 }
 
@@ -302,6 +329,7 @@ enum ExportError: LocalizedError {
     case missingVideo
     case missingVideoTrack
     case exportFailed
+    case exportTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -309,6 +337,7 @@ enum ExportError: LocalizedError {
         case .missingVideo: return "The source video is unavailable."
         case .missingVideoTrack: return "The video track could not be read."
         case .exportFailed: return "The annotated video export failed."
+        case .exportTimedOut: return "The annotated video export took too long and was cancelled. Try trimming the clip shorter, then export again."
         }
     }
 }

@@ -1,3 +1,4 @@
+import AVKit
 import SwiftUI
 
 struct PointSelectionView: View {
@@ -8,6 +9,7 @@ struct PointSelectionView: View {
     @State private var trimStart: Double = 0
     @State private var trimEnd: Double = 0
     @State private var didInitTrim = false
+    @State private var trimPlayer: AVPlayer?
 
     private var duration: Double { max(0, importedVideo?.metadata.duration ?? 0) }
 
@@ -77,6 +79,11 @@ struct PointSelectionView: View {
                 trimEnd = duration
                 didInitTrim = true
             }
+            configureTrimPlayer()
+        }
+        .onDisappear {
+            trimPlayer?.pause()
+            trimPlayer = nil
         }
         .task {
             await viewModel.autoDetect(video: importedVideo)
@@ -98,14 +105,22 @@ struct PointSelectionView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                HStack(spacing: 8) {
-                    Text("Start").font(.caption).foregroundStyle(.secondary).frame(width: 38, alignment: .leading)
-                    Slider(value: $trimStart, in: 0...duration)
+                trimVideoPreview
+
+                TrimRangeSelector(
+                    duration: duration,
+                    start: $trimStart,
+                    end: $trimEnd,
+                    onScrub: seekTrimPreview
+                )
+
+                HStack {
+                    Label(timeString(min(trimStart, trimEnd)), systemImage: "arrow.left.to.line")
+                    Spacer()
+                    Label(timeString(max(trimStart, trimEnd)), systemImage: "arrow.right.to.line")
                 }
-                HStack(spacing: 8) {
-                    Text("End").font(.caption).foregroundStyle(.secondary).frame(width: 38, alignment: .leading)
-                    Slider(value: $trimEnd, in: 0...duration)
-                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
 
                 HStack {
                     Text(selectedRange == nil
@@ -130,6 +145,37 @@ struct PointSelectionView: View {
     private func timeString(_ seconds: Double) -> String {
         let total = max(0, Int(seconds.rounded()))
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    @ViewBuilder
+    private var trimVideoPreview: some View {
+        if importedVideo?.videoURL != nil {
+            VideoPlayer(player: trimPlayer)
+                .aspectRatio(importedVideo?.metadata.aspectRatio ?? 16 / 9, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .onChange(of: trimStart) { _, newValue in
+                    seekTrimPreview(newValue)
+                }
+                .onChange(of: trimEnd) { _, newValue in
+                    seekTrimPreview(newValue)
+                }
+        }
+    }
+
+    private func configureTrimPlayer() {
+        guard trimPlayer == nil, let videoURL = importedVideo?.videoURL else { return }
+        let player = AVPlayer(url: videoURL)
+        player.seek(to: CMTime(seconds: trimStart, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        trimPlayer = player
+    }
+
+    private func seekTrimPreview(_ seconds: Double) {
+        trimPlayer?.pause()
+        trimPlayer?.seek(
+            to: CMTime(seconds: min(max(seconds, 0), duration), preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
     }
 
     private var confidenceColor: Color {
@@ -207,5 +253,85 @@ struct PointSelectionView: View {
             y: Double((clampedY - imageRect.minY) / max(imageRect.height, 1))
         )
         viewModel.markManuallyAdjusted()
+    }
+}
+
+private struct TrimRangeSelector: View {
+    let duration: Double
+    @Binding var start: Double
+    @Binding var end: Double
+    var onScrub: (Double) -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = max(proxy.size.width, 1)
+            let lower = min(start, end)
+            let upper = max(start, end)
+            let lowerX = xPosition(for: lower, width: width)
+            let upperX = xPosition(for: upper, width: width)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.18))
+                    .frame(height: 8)
+
+                Capsule()
+                    .fill(Color.accentColor.opacity(0.36))
+                    .frame(width: max(0, upperX - lowerX), height: 8)
+                    .offset(x: lowerX)
+
+                trimHandle(systemImage: "arrow.left.to.line")
+                    .position(x: lowerX, y: proxy.size.height / 2)
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                start = clampedSeconds(from: value.location.x, width: width)
+                                onScrub(start)
+                            }
+                    )
+
+                trimHandle(systemImage: "arrow.right.to.line")
+                    .position(x: upperX, y: proxy.size.height / 2)
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                end = clampedSeconds(from: value.location.x, width: width)
+                                onScrub(end)
+                            }
+                    )
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { location in
+                let seconds = clampedSeconds(from: location.x, width: width)
+                if abs(seconds - start) <= abs(seconds - end) {
+                    start = seconds
+                } else {
+                    end = seconds
+                }
+                onScrub(seconds)
+            }
+        }
+        .frame(height: 44)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Analyze segment")
+    }
+
+    private func trimHandle(systemImage: String) -> some View {
+        Image(systemName: systemImage)
+            .font(.caption.weight(.bold))
+            .foregroundStyle(.white)
+            .frame(width: 30, height: 30)
+            .background(Circle().fill(Color.accentColor))
+            .shadow(radius: 2, y: 1)
+    }
+
+    private func xPosition(for seconds: Double, width: Double) -> Double {
+        guard duration > 0 else { return 0 }
+        return min(max(seconds / duration, 0), 1) * width
+    }
+
+    private func clampedSeconds(from x: Double, width: Double) -> Double {
+        guard duration > 0 else { return 0 }
+        return min(max(x / max(width, 1), 0), 1) * duration
     }
 }

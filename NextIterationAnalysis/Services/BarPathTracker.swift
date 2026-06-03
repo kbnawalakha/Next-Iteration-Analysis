@@ -65,7 +65,11 @@ final class AutomaticPlateDetectionService {
 
         if let colorFrame = PlateColorFrame(image: image),
            let colorCandidate = colorFrame.likelyPlateCandidate() {
-            if let fittedCenter = LuminanceFrame(image: image)?.fittedPlate(near: colorCandidate.point)?.center {
+            if let luminance = LuminanceFrame(image: image),
+               let fittedCenter = luminance.fittedPlate(
+                    near: colorCandidate.point,
+                    maxCenterDistancePixels: Double(min(luminance.width, luminance.height)) * 0.22
+               )?.center {
                 return PlateDetectionResult(
                     point: fittedCenter,
                     confidence: colorCandidate.confidence,
@@ -105,7 +109,11 @@ final class AutomaticPlateDetectionService {
             x: Double(box.midX),
             y: Double(1 - box.midY)
         )
-        guard let fittedCenter = LuminanceFrame(image: image)?.fittedPlate(near: detectedCenter)?.center else {
+        guard let luminance = LuminanceFrame(image: image),
+              let fittedCenter = luminance.fittedPlate(
+                near: detectedCenter,
+                maxCenterDistancePixels: Double(min(luminance.width, luminance.height)) * 0.24
+              )?.center else {
             return PlateDetectionResult(
                 point: detectedCenter,
                 confidence: Double(candidate.confidence),

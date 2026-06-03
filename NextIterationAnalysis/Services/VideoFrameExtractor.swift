@@ -170,24 +170,44 @@ struct LuminanceFrame {
         let approximateRadius = max(7, min(width, height) / 22)
         let centerX = Int(point.x * Double(width))
         let centerY = Int(point.y * Double(height))
-        let searchRadius = Int(max(6, min(maxCenterDistancePixels ?? Double(approximateRadius), Double(approximateRadius) * 1.4)))
+        let searchRadius = Int(max(6, maxCenterDistancePixels ?? Double(approximateRadius) * 2.2))
         let expectedRadius = expectedRadiusPixels ?? Double(approximateRadius)
-        let radii = [
-            max(5, Int((expectedRadius * 0.82).rounded())),
-            max(5, Int(expectedRadius.rounded())),
-            max(5, Int((expectedRadius * 1.18).rounded()))
-        ]
+        let radiusCandidates: [Double]
+        if let expectedRadiusPixels {
+            radiusCandidates = [
+                expectedRadiusPixels * 0.72,
+                expectedRadiusPixels * 0.88,
+                expectedRadiusPixels,
+                expectedRadiusPixels * 1.16,
+                expectedRadiusPixels * 1.32
+            ]
+        } else {
+            let frameBase = Double(min(width, height))
+            radiusCandidates = [
+                expectedRadius * 0.70,
+                expectedRadius,
+                expectedRadius * 1.35,
+                frameBase * 0.075,
+                frameBase * 0.10,
+                frameBase * 0.13
+            ]
+        }
+        let radii = Array(Set(radiusCandidates.map { max(5, Int($0.rounded())) })).sorted()
 
         var bestScore = 0.0
         var bestFit: PlateFit?
 
-        for y in stride(from: centerY - searchRadius, through: centerY + searchRadius, by: 2) {
-            for x in stride(from: centerX - searchRadius, through: centerX + searchRadius, by: 2) {
+        for y in stride(from: max(0, centerY - searchRadius), through: min(height - 1, centerY + searchRadius), by: 2) {
+            for x in stride(from: max(0, centerX - searchRadius), through: min(width - 1, centerX + searchRadius), by: 2) {
                 for radius in radii {
                     let contrast = circularContrastScore(centerX: x, centerY: y, radius: radius)
                     let circularity = radialEdgeConsistency(centerX: x, centerY: y, radius: radius)
                     let radiusPenalty = expectedRadiusPixels.map { max(0, 1 - abs(Double(radius) - $0) / max($0, 1)) } ?? 1
-                    let score = contrast * 0.58 + circularity * 0.28 + radiusPenalty * 0.14
+                    let dx = Double(x - centerX)
+                    let dy = Double(y - centerY)
+                    let distance = (dx * dx + dy * dy).squareRoot()
+                    let proximity = max(0, 1 - distance / max(Double(searchRadius), 1))
+                    let score = contrast * 0.48 + circularity * 0.34 + radiusPenalty * 0.08 + proximity * 0.10
                     if score > bestScore {
                         bestScore = score
                         bestFit = PlateFit(
