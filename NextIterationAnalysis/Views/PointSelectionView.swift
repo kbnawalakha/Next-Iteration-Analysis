@@ -10,8 +10,11 @@ struct PointSelectionView: View {
     @State private var trimEnd: Double = 0
     @State private var didInitTrim = false
     @State private var trimPlayer: AVPlayer?
+    @State private var selectionFrameImage: UIImage?
+    @State private var detectionTask: Task<Void, Never>?
 
     private var duration: Double { max(0, importedVideo?.metadata.duration ?? 0) }
+    private var selectedStartTime: Double { min(trimStart, trimEnd) }
 
     /// The [start, end] seconds to analyze, or `nil` for the whole video.
     private var selectedRange: ClosedRange<Double>? {
@@ -24,54 +27,59 @@ struct PointSelectionView: View {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Label("Auto-detected plate center", systemImage: "scope")
-                Spacer()
-                if viewModel.isDetecting {
-                    ProgressView()
-                } else {
-                    Text(viewModel.confidenceLabel)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(confidenceColor)
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(spacing: 16) {
+                    HStack {
+                        Label("Auto-detected plate center", systemImage: "scope")
+                        Spacer()
+                        if viewModel.isDetecting {
+                            ProgressView()
+                        } else {
+                            Text(viewModel.confidenceLabel)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(confidenceColor)
+                        }
+                    }
+                    .padding(.horizontal)
+
+                    selectableFrame
+                        .frame(height: max(280, proxy.size.height * 0.44))
+
+                    if let autoDetectionMessage = viewModel.autoDetectionMessage {
+                        Text(autoDetectionMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal)
+                    }
+
+                    trimControls
+
+                    NavigationLink {
+                        AnalysisProgressView(
+                            viewModel: AnalysisViewModel(
+                                importedVideo: importedVideo,
+                                details: details,
+                                startPoint: viewModel.selectedPoint,
+                                trackingMode: viewModel.trackingMode,
+                                usesManualStartPoint: viewModel.isManuallyAdjusted,
+                                timeRange: selectedRange
+                            )
+                        )
+                    } label: {
+                        Label("Analyze Bar Path", systemImage: "waveform.path.ecg")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .padding(.horizontal)
+
+                    Text("The plate is detected automatically. You only need to tap or drag the marker if it landed on the wrong spot — your adjusted position becomes the tracking start.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal)
                 }
             }
-            .padding(.horizontal)
-
-            selectableFrame
-
-            if let autoDetectionMessage = viewModel.autoDetectionMessage {
-                Text(autoDetectionMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal)
-            }
-
-            trimControls
-
-            NavigationLink {
-                AnalysisProgressView(
-                    viewModel: AnalysisViewModel(
-                        importedVideo: importedVideo,
-                        details: details,
-                        startPoint: viewModel.selectedPoint,
-                        trackingMode: viewModel.trackingMode,
-                        usesManualStartPoint: viewModel.isManuallyAdjusted,
-                        timeRange: selectedRange
-                    )
-                )
-            } label: {
-                Label("Analyze Bar Path", systemImage: "waveform.path.ecg")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding(.horizontal)
-
-            Text("The plate is detected automatically. You only need to tap or drag the marker if it landed on the wrong spot — your adjusted position becomes the tracking start.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal)
         }
         .padding(.vertical)
         .onAppear {
@@ -81,13 +89,12 @@ struct PointSelectionView: View {
                 didInitTrim = true
             }
             configureTrimPlayer()
+            updateTrimStartFrame(selectedStartTime, detectPlate: true)
         }
         .onDisappear {
+            detectionTask?.cancel()
             trimPlayer?.pause()
             trimPlayer = nil
-        }
-        .task {
-            await viewModel.autoDetect(video: importedVideo)
         }
         .navigationTitle("Plate Center")
         .navigationBarTitleDisplayMode(.inline)
@@ -106,13 +113,16 @@ struct PointSelectionView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                trimVideoPreview
-
                 TrimRangeSelector(
                     duration: duration,
                     start: $trimStart,
                     end: $trimEnd,
-                    onScrub: seekTrimPreview
+                    onScrub: { startTime in
+                        updateTrimStartFrame(startTime, detectPlate: false)
+                    },
+                    onScrubEnded: { startTime in
+                        updateTrimStartFrame(startTime, detectPlate: true)
+                    }
                 )
 
                 HStack {
@@ -148,28 +158,10 @@ struct PointSelectionView: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    @ViewBuilder
-    private var trimVideoPreview: some View {
-        if importedVideo?.videoURL != nil {
-            VideoPlayer(player: trimPlayer)
-                .aspectRatio(importedVideo?.metadata.aspectRatio ?? 16 / 9, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .onChange(of: trimStart) { _, newValue in
-                    seekTrimPreview(newValue)
-                    Task {
-                        await viewModel.autoDetect(video: importedVideo, startTime: newValue)
-                    }
-                }
-                .onChange(of: trimEnd) { _, newValue in
-                    seekTrimPreview(newValue)
-                }
-        }
-    }
-
     private func configureTrimPlayer() {
         guard trimPlayer == nil, let videoURL = importedVideo?.videoURL else { return }
         let player = AVPlayer(url: videoURL)
-        player.seek(to: CMTime(seconds: trimStart, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        player.seek(to: CMTime(seconds: selectedStartTime, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         trimPlayer = player
     }
 
@@ -180,6 +172,47 @@ struct PointSelectionView: View {
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
+    }
+
+    private func updateTrimStartFrame(_ seconds: Double, detectPlate: Bool) {
+        seekTrimPreview(seconds)
+        Task {
+            await loadSelectionFrame(at: seconds)
+        }
+        guard detectPlate else { return }
+        detectionTask?.cancel()
+        detectionTask = Task {
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard !Task.isCancelled else { return }
+            await viewModel.autoDetect(video: importedVideo, startTime: seconds)
+        }
+    }
+
+    private func loadSelectionFrame(at seconds: Double) async {
+        guard let videoURL = importedVideo?.videoURL else { return }
+        let image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            let asset = AVURLAsset(url: videoURL)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 1200, height: 1200)
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
+            do {
+                let cgImage = try generator.copyCGImage(
+                    at: CMTime(seconds: max(0, seconds), preferredTimescale: 600),
+                    actualTime: nil
+                )
+                return UIImage(cgImage: cgImage)
+            } catch {
+                return nil
+            }
+        }.value
+
+        await MainActor.run {
+            if let image {
+                selectionFrameImage = image
+            }
+        }
     }
 
     private var confidenceColor: Color {
@@ -195,7 +228,12 @@ struct PointSelectionView: View {
         GeometryReader { proxy in
             let imageRect = fittedImageRect(in: proxy.size)
             ZStack {
-                if let thumbnailURL = importedVideo?.thumbnailURL,
+                if let selectionFrameImage {
+                    Image(uiImage: selectionFrameImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let thumbnailURL = importedVideo?.thumbnailURL,
                    let uiImage = UIImage(contentsOfFile: thumbnailURL.path) {
                     Image(uiImage: uiImage)
                         .resizable()
@@ -233,7 +271,7 @@ struct PointSelectionView: View {
         }
         .aspectRatio(importedVideo?.metadata.aspectRatio ?? 16 / 9, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .padding(.horizontal)
+        .padding(.horizontal, 8)
     }
 
     private func fittedImageRect(in container: CGSize) -> CGRect {
@@ -265,6 +303,7 @@ private struct TrimRangeSelector: View {
     @Binding var start: Double
     @Binding var end: Double
     var onScrub: (Double) -> Void
+    var onScrubEnded: (Double) -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -290,7 +329,10 @@ private struct TrimRangeSelector: View {
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
                                 start = clampedSeconds(from: value.location.x, width: width)
-                                onScrub(start)
+                                onScrub(min(start, end))
+                            }
+                            .onEnded { _ in
+                                onScrubEnded(min(start, end))
                             }
                     )
 
@@ -300,7 +342,10 @@ private struct TrimRangeSelector: View {
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
                                 end = clampedSeconds(from: value.location.x, width: width)
-                                onScrub(end)
+                                onScrub(min(start, end))
+                            }
+                            .onEnded { _ in
+                                onScrubEnded(min(start, end))
                             }
                     )
             }
@@ -312,7 +357,9 @@ private struct TrimRangeSelector: View {
                 } else {
                     end = seconds
                 }
-                onScrub(seconds)
+                let selectedStart = min(start, end)
+                onScrub(selectedStart)
+                onScrubEnded(selectedStart)
             }
         }
         .frame(height: 44)

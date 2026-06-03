@@ -98,8 +98,47 @@ final class VideoImportService {
         let duration = try await asset.load(.duration).seconds
         let start = max(0, min(timeRange.lowerBound, duration))
         let end = max(start + 0.1, min(timeRange.upperBound, duration))
+        let sourceRange = CMTimeRange(
+            start: CMTime(seconds: start, preferredTimescale: 600),
+            duration: CMTime(seconds: end - start, preferredTimescale: 600)
+        )
 
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+        let composition = AVMutableComposition()
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        guard let sourceVideoTrack = videoTracks.first,
+              let compositionVideoTrack = composition.addMutableTrack(
+                withMediaType: .video,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+              ) else {
+            throw VideoImportError.trimFailed
+        }
+        try compositionVideoTrack.insertTimeRange(sourceRange, of: sourceVideoTrack, at: .zero)
+        compositionVideoTrack.preferredTransform = try await sourceVideoTrack.load(.preferredTransform)
+
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        for audioTrack in audioTracks {
+            guard let compositionAudioTrack = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            ) else {
+                continue
+            }
+            try? compositionAudioTrack.insertTimeRange(sourceRange, of: audioTrack, at: .zero)
+        }
+
+        let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: composition)
+        let preset: String
+        if compatiblePresets.contains(AVAssetExportPresetHighestQuality) {
+            preset = AVAssetExportPresetHighestQuality
+        } else if compatiblePresets.contains(AVAssetExportPreset1280x720) {
+            preset = AVAssetExportPreset1280x720
+        } else if compatiblePresets.contains(AVAssetExportPresetMediumQuality) {
+            preset = AVAssetExportPresetMediumQuality
+        } else {
+            preset = compatiblePresets.first ?? AVAssetExportPresetHighestQuality
+        }
+
+        guard let exportSession = AVAssetExportSession(asset: composition, presetName: preset) else {
             throw VideoImportError.trimFailed
         }
 
@@ -112,10 +151,6 @@ final class VideoImportService {
 
         exportSession.outputURL = destination
         exportSession.outputFileType = outputType
-        exportSession.timeRange = CMTimeRange(
-            start: CMTime(seconds: start, preferredTimescale: 600),
-            duration: CMTime(seconds: end - start, preferredTimescale: 600)
-        )
         exportSession.shouldOptimizeForNetworkUse = true
 
         let exportBox = VideoExportSessionBox(exportSession)

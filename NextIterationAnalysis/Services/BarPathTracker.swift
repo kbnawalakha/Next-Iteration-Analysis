@@ -407,10 +407,7 @@ final class BarPathTracker {
         if let videoURL = videoURL,
            let trackedPoints = try? await trackPlate(videoURL: videoURL, startingPoint: startingPoint, timeRange: timeRange),
            trackingScore(trackedPoints) > 0.18 {
-            return preserveRefinedStartPoint(
-                SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints)),
-                refinedStart: trackedPoints.first
-            )
+            return preserveRefinedStartPoint(trackedPoints, refinedStart: trackedPoints.first)
         }
 
         if videoURL != nil {
@@ -435,7 +432,7 @@ final class BarPathTracker {
         // Cap total processed frames for speed (and bound memory). Native fps is
         // preserved for typical-length clips; long clips decimate — trim to keep
         // full fidelity. A smaller processing resolution speeds up per-frame work.
-        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 360, timeRange: timeRange)
+        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 900, timeRange: timeRange)
         let colorMaxWidth = 200
         guard let firstFrame = frames.first,
               let firstLuminance = LuminanceFrame(image: firstFrame.image) else {
@@ -479,6 +476,7 @@ final class BarPathTracker {
 
             var chosen: NormalizedPoint?
             var chosenConfidence = 0.0
+            let luminance = LuminanceFrame(image: frame.image)
 
             if let targetHue, let colorFrame = PlateColorFrame(image: frame.image, maxWidth: colorMaxWidth) {
                 let minArea = max(24, colorFrame.width * colorFrame.height / 700)
@@ -493,12 +491,19 @@ final class BarPathTracker {
                     }
 
                     let scored = components.map { component -> (NormalizedPoint, Double) in
-                        let dx = component.center.x - predicted.x
-                        let dy = component.center.y - predicted.y
+                        let fitted = luminance?.fittedPlate(
+                            near: component.center,
+                            expectedRadiusPixels: initialFit?.radiusPixels,
+                            maxCenterDistancePixels: Double(max(18, Int(component.radiusPixels * 2.2)))
+                        )
+                        let center = fitted?.center ?? component.center
+                        let dx = center.x - predicted.x
+                        let dy = center.y - predicted.y
                         let distance = (dx * dx + dy * dy).squareRoot()
                         let proximity = max(0, 1 - distance / 0.35)
-                        let score = proximity * 0.7 + areaScore(component) * 0.2 + min(1, component.saturation) * 0.1
-                        return (component.center, score)
+                        let fitBonus = min(1, fitted?.confidence ?? 0) * 0.18
+                        let score = proximity * 0.58 + areaScore(component) * 0.18 + min(1, component.saturation) * 0.06 + fitBonus
+                        return (center, score)
                     }
 
                     if let best = scored.max(by: { $0.1 < $1.1 }), best.1 > 0.28 {
@@ -514,7 +519,7 @@ final class BarPathTracker {
             }
 
             if chosen == nil,
-               let luminance = LuminanceFrame(image: frame.image),
+               let luminance,
                let fit = luminance.fittedPlate(
                     near: predicted,
                     maxCenterDistancePixels: Double(max(luminance.width, luminance.height))
@@ -528,10 +533,7 @@ final class BarPathTracker {
                     x: center.x - previousPoint.x,
                     y: center.y - previousPoint.y
                 )
-                velocity = NormalizedPoint(
-                    x: velocity.x * 0.6 + nextVelocity.x * 0.4,
-                    y: velocity.y * 0.6 + nextVelocity.y * 0.4
-                )
+                velocity = nextVelocity
                 previousPoint = center
                 missedFrames = 0
                 trackedPoints.append(TrackedPoint(
