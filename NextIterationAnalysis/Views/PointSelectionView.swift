@@ -12,6 +12,7 @@ struct PointSelectionView: View {
     @State private var trimPlayer: AVPlayer?
     @State private var selectionFrameImage: UIImage?
     @State private var detectionTask: Task<Void, Never>?
+    @State private var analysisQuality: AnalysisQuality = .fast
 
     private var duration: Double { max(0, importedVideo?.metadata.duration ?? 0) }
     private var selectedStartTime: Double { min(trimStart, trimEnd) }
@@ -63,7 +64,8 @@ struct PointSelectionView: View {
                                 startPoint: viewModel.selectedPoint,
                                 trackingMode: viewModel.trackingMode,
                                 usesManualStartPoint: viewModel.isManuallyAdjusted,
-                                timeRange: selectedRange
+                                timeRange: selectedRange,
+                                analysisQuality: analysisQuality
                             )
                         )
                     } label: {
@@ -132,6 +134,13 @@ struct PointSelectionView: View {
                 }
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
+
+                Picker("Analysis speed", selection: $analysisQuality) {
+                    ForEach(AnalysisQuality.allCases) { quality in
+                        Text(quality.displayName).tag(quality)
+                    }
+                }
+                .pickerStyle(.segmented)
 
                 HStack {
                     Text(selectedRange == nil

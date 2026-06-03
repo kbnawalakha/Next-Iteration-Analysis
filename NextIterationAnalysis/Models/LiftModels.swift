@@ -44,6 +44,38 @@ enum TrainingGoal: String, Codable, CaseIterable, Identifiable {
     var displayName: String { rawValue.capitalized }
 }
 
+enum AnalysisQuality: String, Codable, CaseIterable, Identifiable {
+    case fast
+    case balanced
+    case accurate
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .fast: return "Fast"
+        case .balanced: return "Balanced"
+        case .accurate: return "Accurate"
+        }
+    }
+
+    var trackingFrameLimit: Int {
+        switch self {
+        case .fast: return 240
+        case .balanced: return 480
+        case .accurate: return 900
+        }
+    }
+
+    var poseFrameLimit: Int {
+        switch self {
+        case .fast: return 24
+        case .balanced: return 48
+        case .accurate: return 90
+        }
+    }
+}
+
 struct LiftSession: Codable, Identifiable {
     let id: UUID
     let createdAt: Date

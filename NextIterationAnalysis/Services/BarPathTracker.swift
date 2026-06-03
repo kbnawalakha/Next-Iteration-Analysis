@@ -402,10 +402,16 @@ final class BarPathTracker {
         startingPoint: NormalizedPoint,
         reps: Int,
         mode: TrackingMode,
-        timeRange: ClosedRange<Double>? = nil
+        timeRange: ClosedRange<Double>? = nil,
+        maxFrames: Int = 900
     ) async -> [TrackedPoint] {
         if let videoURL = videoURL,
-           let trackedPoints = try? await trackPlate(videoURL: videoURL, startingPoint: startingPoint, timeRange: timeRange),
+           let trackedPoints = try? await trackPlate(
+                videoURL: videoURL,
+                startingPoint: startingPoint,
+                timeRange: timeRange,
+                maxFrames: maxFrames
+           ),
            trackingScore(trackedPoints) > 0.18 {
             return preserveRefinedStartPoint(trackedPoints, refinedStart: trackedPoints.first)
         }
@@ -427,12 +433,13 @@ final class BarPathTracker {
     private func trackPlate(
         videoURL: URL,
         startingPoint: NormalizedPoint,
-        timeRange: ClosedRange<Double>? = nil
+        timeRange: ClosedRange<Double>? = nil,
+        maxFrames: Int = 900
     ) async throws -> [TrackedPoint] {
         // Cap total processed frames for speed (and bound memory). Native fps is
         // preserved for typical-length clips; long clips decimate — trim to keep
         // full fidelity. A smaller processing resolution speeds up per-frame work.
-        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 900, timeRange: timeRange)
+        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: maxFrames, timeRange: timeRange)
         let colorMaxWidth = 200
         guard let firstFrame = frames.first,
               let firstLuminance = LuminanceFrame(image: firstFrame.image) else {

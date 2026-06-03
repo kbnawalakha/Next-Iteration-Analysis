@@ -86,6 +86,7 @@ final class AnalysisViewModel: ObservableObject {
     let usesManualStartPoint: Bool
     /// Optional [start, end] seconds to analyze only part of the video.
     let timeRange: ClosedRange<Double>?
+    let analysisQuality: AnalysisQuality
 
     private let tracker = BarPathTracker()
     private let poseDetectionService = PoseDetectionService()
@@ -105,7 +106,8 @@ final class AnalysisViewModel: ObservableObject {
         startPoint: NormalizedPoint,
         trackingMode: TrackingMode,
         usesManualStartPoint: Bool = false,
-        timeRange: ClosedRange<Double>? = nil
+        timeRange: ClosedRange<Double>? = nil,
+        analysisQuality: AnalysisQuality = .fast
     ) {
         self.importedVideo = importedVideo
         self.details = details
@@ -113,6 +115,7 @@ final class AnalysisViewModel: ObservableObject {
         self.trackingMode = trackingMode
         self.usesManualStartPoint = usesManualStartPoint
         self.timeRange = timeRange
+        self.analysisQuality = analysisQuality
     }
 
     func runAnalysis() async {
@@ -123,8 +126,17 @@ final class AnalysisViewModel: ObservableObject {
             let analysisVideo = try await preparedVideoForAnalysis()
 
             try await step(.extractingFrames)
-            try await step(.detectingPose)
-            let poseFrames = await poseDetectionService.detectPoseFrames(videoURL: analysisVideo?.videoURL)
+            let poseFrames: [PoseFrame]
+            if details.liftType.isVideoInferred {
+                try await step(.detectingPose)
+                poseFrames = await poseDetectionService.detectPoseFrames(
+                    videoURL: analysisVideo?.videoURL,
+                    maxFrames: analysisQuality.poseFrameLimit
+                )
+            } else {
+                completedSteps.insert(.detectingPose)
+                poseFrames = []
+            }
 
             try await step(.detectingPlate)
             let analysisStartPoint = await startPointForAnalysis(video: analysisVideo)
@@ -135,7 +147,8 @@ final class AnalysisViewModel: ObservableObject {
                 startingPoint: analysisStartPoint,
                 reps: details.reps,
                 mode: trackingMode,
-                timeRange: nil
+                timeRange: nil,
+                maxFrames: analysisQuality.trackingFrameLimit
             )
 
             try await step(.calculatingMetrics)
@@ -193,8 +206,13 @@ final class AnalysisViewModel: ObservableObject {
 
     private func preparedVideoForAnalysis() async throws -> ImportedLiftVideo? {
         guard let importedVideo else { return nil }
-        guard let timeRange else { return importedVideo }
-        return try await importService.trimmedVideo(from: importedVideo, timeRange: timeRange)
+        let trimmedVideo: ImportedLiftVideo
+        if let timeRange {
+            trimmedVideo = try await importService.trimmedVideo(from: importedVideo, timeRange: timeRange)
+        } else {
+            trimmedVideo = importedVideo
+        }
+        return try await importService.reducedSizeVideo(from: trimmedVideo, quality: .medium)
     }
 
     private func startPointForAnalysis(video: ImportedLiftVideo?) async -> NormalizedPoint {
