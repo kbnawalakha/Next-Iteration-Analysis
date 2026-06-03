@@ -56,6 +56,7 @@ struct PointSelectionView: View {
                         details: details,
                         startPoint: viewModel.selectedPoint,
                         trackingMode: viewModel.trackingMode,
+                        usesManualStartPoint: viewModel.isManuallyAdjusted,
                         timeRange: selectedRange
                     )
                 )
@@ -155,6 +156,9 @@ struct PointSelectionView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .onChange(of: trimStart) { _, newValue in
                     seekTrimPreview(newValue)
+                    Task {
+                        await viewModel.autoDetect(video: importedVideo, startTime: newValue)
+                    }
                 }
                 .onChange(of: trimEnd) { _, newValue in
                     seekTrimPreview(newValue)

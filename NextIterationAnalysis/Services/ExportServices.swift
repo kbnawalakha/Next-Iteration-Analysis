@@ -39,7 +39,9 @@ final class AnnotatedVideoExportService {
         let naturalSize = (try? await videoTrack.load(.naturalSize)) ?? CGSize(width: 1280, height: 720)
         let preferredTransform = (try? await videoTrack.load(.preferredTransform)) ?? .identity
         let orientedSize = naturalSize.applying(preferredTransform)
-        let renderSize = CGSize(width: max(16, abs(orientedSize.width)), height: max(16, abs(orientedSize.height)))
+        let renderSize = Self.cappedRenderSize(
+            CGSize(width: max(16, abs(orientedSize.width)), height: max(16, abs(orientedSize.height)))
+        )
 
         let overlayRenderer = AnnotatedVideoOverlayRenderer(path: analysis.trackedPath, reps: session.reps, colorStyle: colorStyle)
         let videoComposition = AVMutableVideoComposition(asset: asset) { request in
@@ -52,7 +54,7 @@ final class AnnotatedVideoExportService {
             let overlay = overlayRenderer.overlayImage(
                 size: extent.size,
                 extent: extent,
-                currentTime: request.compositionTime.seconds
+                currentTime: nil
             )
             request.finish(with: overlay.composited(over: source).cropped(to: extent), context: nil)
         }
@@ -102,6 +104,15 @@ final class AnnotatedVideoExportService {
         }
 
         return destination
+    }
+
+    private static func cappedRenderSize(_ size: CGSize) -> CGSize {
+        let maxDimension: CGFloat = 1280
+        let scale = min(1, maxDimension / max(size.width, size.height, 1))
+        return CGSize(
+            width: max(16, (size.width * scale).rounded()),
+            height: max(16, (size.height * scale).rounded())
+        )
     }
 }
 
@@ -181,7 +192,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
 
     private func visiblePath(through currentTime: Double?) -> [TrackedPoint] {
         guard let currentTime else { return path }
-        return frameAlignedPath(from: path, at: currentTime, offsetsFromFirstFrame: true)
+        return frameAlignedPath(from: path, at: currentTime)
     }
 
     private func drawVelocityPath(size: CGSize, visiblePath: [TrackedPoint], currentTime: Double?) {
@@ -225,7 +236,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
     }
 
     private func visiblePath(from points: [TrackedPoint], through currentTime: Double) -> [TrackedPoint] {
-        frameAlignedPath(from: points, at: currentTime, offsetsFromFirstFrame: false)
+        frameAlignedPath(from: points, at: currentTime)
     }
 
     private func drawVelocitySegments(_ segments: [VelocitySegment], opacity: Double, size: CGSize) {
@@ -285,13 +296,12 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
 
     private func frameAlignedPath(
         from points: [TrackedPoint],
-        at playbackTime: Double,
-        offsetsFromFirstFrame: Bool
+        at playbackTime: Double
     ) -> [TrackedPoint] {
         guard let first = points.first else { return [] }
         guard points.count > 1 else { return points }
 
-        let timelineTime = playbackTime + (offsetsFromFirstFrame ? max(0, first.timestamp) : 0)
+        let timelineTime = playbackTime
         if timelineTime <= first.timestamp {
             return [first]
         }

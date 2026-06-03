@@ -15,17 +15,23 @@ final class LiftTypeInferenceService {
         let verticalRange = (ys.max() ?? first.y) - (ys.min() ?? first.y)
         let netVertical = first.y - last.y
         let averageY = ys.reduce(0, +) / Double(max(ys.count, 1))
+        let startsVeryHigh = first.y < 0.28
+        let staysVeryHigh = averageY < 0.30
 
         if averageY > 0.62, netVertical > 0.08 {
             return .deadlift
         }
 
-        if averageY < 0.38, verticalRange > 0.08 {
-            return .overheadPress
-        }
-
         if poseFrames.contains(where: hasHorizontalTorso), verticalRange > 0.06 {
             return .benchPress
+        }
+
+        if verticalRange > 0.10, !startsVeryHigh {
+            return .squat
+        }
+
+        if staysVeryHigh, verticalRange > 0.08 {
+            return .overheadPress
         }
 
         if verticalRange > 0.12 {

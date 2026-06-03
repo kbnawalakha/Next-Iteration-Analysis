@@ -92,6 +92,40 @@ final class VideoImportService {
         return ImportedLiftVideo(videoURL: destination, thumbnailURL: thumbnailURL, metadata: metadata)
     }
 
+    func trimmedVideo(from importedVideo: ImportedLiftVideo, timeRange: ClosedRange<Double>) async throws -> ImportedLiftVideo {
+        let sourceURL = importedVideo.videoURL
+        let asset = AVURLAsset(url: sourceURL)
+        let duration = try await asset.load(.duration).seconds
+        let start = max(0, min(timeRange.lowerBound, duration))
+        let end = max(start + 0.1, min(timeRange.upperBound, duration))
+
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            throw VideoImportError.trimFailed
+        }
+
+        let outputType: AVFileType = exportSession.supportedFileTypes.contains(.mp4) ? .mp4 : .mov
+        let fileExtension = outputType == .mp4 ? "mp4" : "mov"
+        let destination = try storage.makeImportURL(for: URL(fileURLWithPath: "trimmed.\(fileExtension)"))
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+
+        exportSession.outputURL = destination
+        exportSession.outputFileType = outputType
+        exportSession.timeRange = CMTimeRange(
+            start: CMTime(seconds: start, preferredTimescale: 600),
+            duration: CMTime(seconds: end - start, preferredTimescale: 600)
+        )
+        exportSession.shouldOptimizeForNetworkUse = true
+
+        let exportBox = VideoExportSessionBox(exportSession)
+        try await exportBox.export(error: VideoImportError.trimFailed)
+
+        let metadata = try await metadata(for: destination)
+        let thumbnailURL = try? await generateThumbnail(for: destination)
+        return ImportedLiftVideo(videoURL: destination, thumbnailURL: thumbnailURL, metadata: metadata)
+    }
+
     private func metadata(for url: URL) async throws -> VideoMetadata {
         let asset = AVURLAsset(url: url)
         let duration = try await asset.load(.duration).seconds
@@ -156,6 +190,7 @@ enum VideoImportError: LocalizedError {
     case missingVideoTrack
     case thumbnailGenerationFailed
     case compressionFailed
+    case trimFailed
 
     var errorDescription: String? {
         switch self {
@@ -167,6 +202,31 @@ enum VideoImportError: LocalizedError {
             return "The selected video thumbnail could not be generated."
         case .compressionFailed:
             return "The selected video could not be reduced."
+        case .trimFailed:
+            return "The selected video segment could not be trimmed."
+        }
+    }
+}
+
+private final class VideoExportSessionBox: @unchecked Sendable {
+    let session: AVAssetExportSession
+
+    init(_ session: AVAssetExportSession) {
+        self.session = session
+    }
+
+    func export(error fallbackError: Error) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            session.exportAsynchronously {
+                switch self.session.status {
+                case .completed:
+                    continuation.resume()
+                case .failed, .cancelled:
+                    continuation.resume(throwing: self.session.error ?? fallbackError)
+                default:
+                    continuation.resume(throwing: fallbackError)
+                }
+            }
         }
     }
 }

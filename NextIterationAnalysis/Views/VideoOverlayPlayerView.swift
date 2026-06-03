@@ -92,7 +92,7 @@ struct VideoOverlayPlayerView: View {
         guard player == nil, let videoURL = session.videoURL else { return }
         let newPlayer = AVPlayer(url: videoURL)
         let observer = newPlayer.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600),
+            forInterval: CMTime(seconds: 1.0 / 60.0, preferredTimescale: 600),
             queue: .main
         ) { time in
             playbackTime = time.seconds.isFinite ? time.seconds : 0
@@ -167,13 +167,13 @@ struct VelocityBarPathOverlay: View {
 
     private func visiblePath(from points: [TrackedPoint]) -> [TrackedPoint] {
         guard let currentTime else { return points }
-        return frameAlignedPath(from: points, at: currentTime, offsetsFromFirstFrame: true)
+        return frameAlignedPath(from: points, at: currentTime)
     }
 
     private func visibleSegments(from segments: [RepPathSegment]) -> [RepPathSegment] {
         guard let currentTime else { return segments }
         return segments.compactMap { segment in
-            let visiblePoints = frameAlignedPath(from: segment.points, at: currentTime, offsetsFromFirstFrame: false)
+            let visiblePoints = frameAlignedPath(from: segment.points, at: currentTime)
             guard visiblePoints.count > 1, visiblePoints.first?.timestamp ?? 0 <= currentTime else { return nil }
             let active = (visiblePoints.last?.timestamp ?? 0) < (segment.points.last?.timestamp ?? 0)
             return RepPathSegment(
@@ -228,13 +228,12 @@ struct VelocityBarPathOverlay: View {
 
     private func frameAlignedPath(
         from points: [TrackedPoint],
-        at playbackTime: Double,
-        offsetsFromFirstFrame: Bool
+        at playbackTime: Double
     ) -> [TrackedPoint] {
         guard let first = points.first else { return [] }
         guard points.count > 1 else { return points }
 
-        let timelineTime = playbackTime + (offsetsFromFirstFrame ? max(0, first.timestamp) : 0)
+        let timelineTime = playbackTime
         if timelineTime <= first.timestamp {
             return [first]
         }

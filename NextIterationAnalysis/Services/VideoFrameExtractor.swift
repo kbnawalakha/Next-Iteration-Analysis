@@ -57,8 +57,9 @@ final class VideoFrameExtractor {
                 do {
                     var actualTime = CMTime.zero
                     let image = try generator.copyCGImage(at: time, actualTime: &actualTime)
+                    let resolvedSeconds = actualTime.seconds.isFinite ? actualTime.seconds : seconds
                     return VideoFrame(
-                        timestamp: actualTime.seconds.isFinite ? actualTime.seconds : seconds,
+                        timestamp: max(0, resolvedSeconds - start),
                         frameIndex: index,
                         image: image,
                         nominalFrameRate: fps
@@ -71,6 +72,10 @@ final class VideoFrameExtractor {
     }
 
     func firstFrame(from url: URL) async throws -> VideoFrame? {
+        try await firstFrame(from: url, at: 0)
+    }
+
+    func firstFrame(from url: URL, at seconds: Double) async throws -> VideoFrame? {
         try await Task.detached(priority: .userInitiated) {
             let asset = AVURLAsset(url: url)
             let generator = AVAssetImageGenerator(asset: asset)
@@ -78,9 +83,10 @@ final class VideoFrameExtractor {
             generator.maximumSize = CGSize(width: 900, height: 900)
 
             var actualTime = CMTime.zero
-            let image = try generator.copyCGImage(at: .zero, actualTime: &actualTime)
+            let requestedTime = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+            let image = try generator.copyCGImage(at: requestedTime, actualTime: &actualTime)
             return VideoFrame(
-                timestamp: actualTime.seconds.isFinite ? actualTime.seconds : 0,
+                timestamp: 0,
                 frameIndex: 0,
                 image: image,
                 nominalFrameRate: try await Self.videoFrameRate(for: asset)

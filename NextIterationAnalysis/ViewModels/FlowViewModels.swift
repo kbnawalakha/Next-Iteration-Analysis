@@ -83,12 +83,15 @@ final class AnalysisViewModel: ObservableObject {
     let details: LiftDetails
     let startPoint: NormalizedPoint
     let trackingMode: TrackingMode
+    let usesManualStartPoint: Bool
     /// Optional [start, end] seconds to analyze only part of the video.
     let timeRange: ClosedRange<Double>?
 
     private let tracker = BarPathTracker()
     private let poseDetectionService = PoseDetectionService()
     private let metricsCalculator = LiftMetricsCalculator()
+    private let importService = VideoImportService()
+    private let plateDetectionService = AutomaticPlateDetectionService()
     private let ruleEngine = TechniqueRuleEngine()
     private let liftTypeInferenceService = LiftTypeInferenceService()
     private let recommendationService = WeightRecommendationService()
@@ -101,12 +104,14 @@ final class AnalysisViewModel: ObservableObject {
         details: LiftDetails,
         startPoint: NormalizedPoint,
         trackingMode: TrackingMode,
+        usesManualStartPoint: Bool = false,
         timeRange: ClosedRange<Double>? = nil
     ) {
         self.importedVideo = importedVideo
         self.details = details
         self.startPoint = startPoint
         self.trackingMode = trackingMode
+        self.usesManualStartPoint = usesManualStartPoint
         self.timeRange = timeRange
     }
 
@@ -115,18 +120,22 @@ final class AnalysisViewModel: ObservableObject {
 
         do {
             try await step(.loadingVideo)
+            let analysisVideo = try await preparedVideoForAnalysis()
+
             try await step(.extractingFrames)
             try await step(.detectingPose)
-            let poseFrames = await poseDetectionService.detectPoseFrames(videoURL: importedVideo?.videoURL)
+            let poseFrames = await poseDetectionService.detectPoseFrames(videoURL: analysisVideo?.videoURL)
 
             try await step(.detectingPlate)
+            let analysisStartPoint = await startPointForAnalysis(video: analysisVideo)
+
             try await step(.trackingPath)
             let path = await tracker.track(
-                videoURL: importedVideo?.videoURL,
-                startingPoint: startPoint,
+                videoURL: analysisVideo?.videoURL,
+                startingPoint: analysisStartPoint,
                 reps: details.reps,
                 mode: trackingMode,
-                timeRange: timeRange
+                timeRange: nil
             )
 
             try await step(.calculatingMetrics)
@@ -144,7 +153,7 @@ final class AnalysisViewModel: ObservableObject {
             try await step(.generatingFeedback)
             var critique = ruleEngine.critique(details: analyzedDetails, metrics: metrics, trackingMode: trackingMode)
             critique = await aiService.refineCritique(
-                videoURL: importedVideo?.videoURL,
+                videoURL: analysisVideo?.videoURL,
                 details: analyzedDetails,
                 metrics: metrics,
                 poseFrames: poseFrames,
@@ -158,9 +167,9 @@ final class AnalysisViewModel: ObservableObject {
             session = LiftSession(
                 id: UUID(),
                 createdAt: .now,
-                videoURL: importedVideo?.videoURL,
-                thumbnailURL: importedVideo?.thumbnailURL,
-                videoAspectRatio: importedVideo?.metadata.aspectRatio,
+                videoURL: analysisVideo?.videoURL,
+                thumbnailURL: analysisVideo?.thumbnailURL,
+                videoAspectRatio: analysisVideo?.metadata.aspectRatio,
                 liftType: analyzedLiftType,
                 weight: details.weight,
                 unit: details.unit,
@@ -180,6 +189,18 @@ final class AnalysisViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func preparedVideoForAnalysis() async throws -> ImportedLiftVideo? {
+        guard let importedVideo else { return nil }
+        guard let timeRange else { return importedVideo }
+        return try await importService.trimmedVideo(from: importedVideo, timeRange: timeRange)
+    }
+
+    private func startPointForAnalysis(video: ImportedLiftVideo?) async -> NormalizedPoint {
+        guard !usesManualStartPoint else { return startPoint }
+        let result = await plateDetectionService.detectPlateStartPoint(videoURL: video?.videoURL, thumbnailURL: video?.thumbnailURL)
+        return result.confidence >= 0.5 ? result.point : startPoint
     }
 
     func exportCSV() {
@@ -219,15 +240,21 @@ final class PointSelectionViewModel: ObservableObject {
     @Published var confidenceLabel: String = "Low"
     @Published var confidence: Double = 0
     @Published var isDetecting = false
+    @Published private(set) var isManuallyAdjusted = false
 
     private let detector = AutomaticPlateDetectionService()
 
-    func autoDetect(video: ImportedLiftVideo?) async {
+    func autoDetect(video: ImportedLiftVideo?, startTime: Double = 0) async {
         isDetecting = true
         defer { isDetecting = false }
         trackingMode = .automaticPlateDetection
-        let result = await detector.detectPlateStartPoint(videoURL: video?.videoURL, thumbnailURL: video?.thumbnailURL)
+        let result = await detector.detectPlateStartPoint(
+            videoURL: video?.videoURL,
+            thumbnailURL: video?.thumbnailURL,
+            startTime: startTime
+        )
         selectedPoint = result.point
+        isManuallyAdjusted = false
         confidence = result.confidence
         confidenceLabel = result.confidenceLabel
         autoDetectionMessage = "\(result.explanation) Confidence \(result.confidenceLabel) (\(Formatting.percent(result.confidence * 100)))."
@@ -235,6 +262,7 @@ final class PointSelectionViewModel: ObservableObject {
 
     func markManuallyAdjusted() {
         trackingMode = .automaticPlateDetection
+        isManuallyAdjusted = true
         confidence = min(confidence, 0.74)
         confidenceLabel = confidence > 0 ? "Manual Adjust" : "Adjusted"
         autoDetectionMessage = "Plate center adjusted. The tracker will follow this center point across the lift."

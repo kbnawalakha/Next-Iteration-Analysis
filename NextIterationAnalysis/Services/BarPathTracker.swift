@@ -38,9 +38,9 @@ struct PlateDetectionResult {
 final class AutomaticPlateDetectionService {
     private let frameExtractor = VideoFrameExtractor()
 
-    func detectPlateStartPoint(videoURL: URL?, thumbnailURL: URL?) async -> PlateDetectionResult {
+    func detectPlateStartPoint(videoURL: URL?, thumbnailURL: URL?, startTime: Double = 0) async -> PlateDetectionResult {
         if let videoURL = videoURL,
-           let frame = try? await frameExtractor.firstFrame(from: videoURL),
+           let frame = try? await frameExtractor.firstFrame(from: videoURL, at: startTime),
            let candidate = detectInImage(frame.image) {
             return candidate
         }
@@ -407,9 +407,9 @@ final class BarPathTracker {
         if let videoURL = videoURL,
            let trackedPoints = try? await trackPlate(videoURL: videoURL, startingPoint: startingPoint, timeRange: timeRange),
            trackingScore(trackedPoints) > 0.18 {
-            return preserveInitialPoint(
+            return preserveRefinedStartPoint(
                 SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints)),
-                startingPoint: startingPoint
+                refinedStart: trackedPoints.first
             )
         }
 
@@ -564,16 +564,17 @@ final class BarPathTracker {
         return points.map(\.confidence).reduce(0, +) / Double(points.count)
     }
 
-    private func preserveInitialPoint(_ points: [TrackedPoint], startingPoint: NormalizedPoint) -> [TrackedPoint] {
+    private func preserveRefinedStartPoint(_ points: [TrackedPoint], refinedStart: TrackedPoint?) -> [TrackedPoint] {
         guard let first = points.first else { return points }
+        let start = refinedStart ?? first
         var corrected = points
         corrected[0] = TrackedPoint(
             id: first.id,
-            timestamp: first.timestamp,
-            frameIndex: first.frameIndex,
-            x: startingPoint.x,
-            y: startingPoint.y,
-            confidence: max(first.confidence, 0.82)
+            timestamp: start.timestamp,
+            frameIndex: start.frameIndex,
+            x: start.x,
+            y: start.y,
+            confidence: max(start.confidence, first.confidence, 0.82)
         )
         return corrected
     }
