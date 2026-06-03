@@ -31,7 +31,14 @@ struct LiftDetailsView: View {
                 }
                 .pickerStyle(.segmented)
 
-                Stepper("Reps: \(viewModel.details.reps)", value: $viewModel.details.reps, in: 1...20)
+                // Reps are no longer entered by hand — they're counted from the
+                // bar path during analysis and shown on the results screen.
+                LabeledContent("Reps") {
+                    Label("Counted automatically", systemImage: "wand.and.stars")
+                        .labelStyle(.titleAndIcon)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
 
                 TextField("RPE optional", value: $viewModel.details.rpe, format: .number)
                     .keyboardType(.decimalPad)
@@ -51,7 +58,7 @@ struct LiftDetailsView: View {
 
             if !viewModel.canAnalyze {
                 Section {
-                    Text("Weight must be positive, reps must be at least 1, and lift type is required.")
+                    Text("Enter a positive weight and choose a lift type. Reps are detected automatically from the video.")
                         .foregroundStyle(.secondary)
                 }
             }
