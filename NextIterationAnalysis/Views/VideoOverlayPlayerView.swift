@@ -20,26 +20,17 @@ enum BarPathColorStyle: String, CaseIterable, Identifiable {
 struct VideoOverlayPlayerView: View {
     let session: LiftSession
     @Binding var colorStyle: BarPathColorStyle
-    var minVideoHeight: CGFloat?
     @State private var player: AVPlayer?
     @State private var playbackTime = 0.0
     @State private var timeObserver: Any?
 
-    init(
-        session: LiftSession,
-        colorStyle: Binding<BarPathColorStyle> = .constant(.velocity),
-        minVideoHeight: CGFloat? = nil
-    ) {
+    init(session: LiftSession, colorStyle: Binding<BarPathColorStyle> = .constant(.velocity)) {
         self.session = session
         self._colorStyle = colorStyle
-        self.minVideoHeight = minVideoHeight
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Video Overlay")
-                .font(.headline)
-
             ZStack {
                 if session.videoURL != nil {
                     VideoPlayer(player: player)
@@ -66,7 +57,6 @@ struct VideoOverlayPlayerView: View {
                     .allowsHitTesting(false)
             }
             .aspectRatio(session.videoAspectRatio ?? 16 / 9, contentMode: .fit)
-            .frame(minHeight: minVideoHeight)
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             Picker("Bar path color", selection: $colorStyle) {
@@ -75,14 +65,6 @@ struct VideoOverlayPlayerView: View {
                 }
             }
             .pickerStyle(.segmented)
-
-            HStack {
-                Label("Slow playback", systemImage: "tortoise")
-                Spacer()
-                Label("Frame scrub", systemImage: "slider.horizontal.3")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
         .onAppear(perform: configurePlayer)
         .onDisappear(perform: tearDownPlayer)
@@ -92,7 +74,7 @@ struct VideoOverlayPlayerView: View {
         guard player == nil, let videoURL = session.videoURL else { return }
         let newPlayer = AVPlayer(url: videoURL)
         let observer = newPlayer.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 1.0 / 60.0, preferredTimescale: 600),
+            forInterval: CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600),
             queue: .main
         ) { time in
             playbackTime = time.seconds.isFinite ? time.seconds : 0
@@ -167,13 +149,13 @@ struct VelocityBarPathOverlay: View {
 
     private func visiblePath(from points: [TrackedPoint]) -> [TrackedPoint] {
         guard let currentTime else { return points }
-        return frameAlignedPath(from: points, at: currentTime)
+        return frameAlignedPath(from: points, at: currentTime, offsetsFromFirstFrame: true)
     }
 
     private func visibleSegments(from segments: [RepPathSegment]) -> [RepPathSegment] {
         guard let currentTime else { return segments }
         return segments.compactMap { segment in
-            let visiblePoints = frameAlignedPath(from: segment.points, at: currentTime)
+            let visiblePoints = frameAlignedPath(from: segment.points, at: currentTime, offsetsFromFirstFrame: false)
             guard visiblePoints.count > 1, visiblePoints.first?.timestamp ?? 0 <= currentTime else { return nil }
             let active = (visiblePoints.last?.timestamp ?? 0) < (segment.points.last?.timestamp ?? 0)
             return RepPathSegment(
@@ -228,12 +210,13 @@ struct VelocityBarPathOverlay: View {
 
     private func frameAlignedPath(
         from points: [TrackedPoint],
-        at playbackTime: Double
+        at playbackTime: Double,
+        offsetsFromFirstFrame: Bool
     ) -> [TrackedPoint] {
         guard let first = points.first else { return [] }
         guard points.count > 1 else { return points }
 
-        let timelineTime = playbackTime
+        let timelineTime = playbackTime + (offsetsFromFirstFrame ? max(0, first.timestamp) : 0)
         if timelineTime <= first.timestamp {
             return [first]
         }

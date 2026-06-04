@@ -2,8 +2,7 @@ import SwiftUI
 
 /// Drives CSV / annotated-video export directly from a `LiftSession` so export
 /// works for any session (including saved history), not only immediately after
-/// a fresh analysis. Surfaces progress so the button no longer appears to do
-/// nothing while a long export runs.
+/// a fresh analysis. Surfaces progress so the button doesn't appear stuck.
 @MainActor
 final class SessionExportController: ObservableObject {
     @Published var isExporting = false
@@ -33,7 +32,7 @@ final class SessionExportController: ObservableObject {
             exportedURL = url
             message = "Video ready: \(url.lastPathComponent)"
         } catch {
-            message = error.localizedDescription
+            message = "Export failed: \(error.localizedDescription)"
         }
     }
 }
@@ -46,11 +45,26 @@ struct AnalysisResultsView: View {
     @StateObject private var exporter = SessionExportController()
 
     var body: some View {
-        GeometryReader { proxy in
+        GeometryReader { geo in
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    videoSection(minHeight: proxy.size.height * 0.5)
-                    statsSection
+                VStack(alignment: .leading, spacing: 16) {
+                    // Video occupies ~half the screen so it's large and there's
+                    // nothing to scroll while watching; stats sit underneath.
+                    VideoOverlayPlayerView(session: session, colorStyle: $colorStyle)
+                        .frame(height: geo.size.height * 0.5)
+
+                    exportBar
+
+                    MetricsView(session: session)
+                    TechniqueCritiqueView(critique: session.analysis?.critique)
+                    RecommendationView(session: session)
+
+                    Text("This analysis is an estimate based on video and may be inaccurate. Use it as a training aid, not as medical advice or a replacement for a qualified coach. Stop lifting if you feel pain or unsafe.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding()
+                        .background(Color.yellow.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .padding()
             }
@@ -59,17 +73,8 @@ struct AnalysisResultsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    // MARK: - Video and export
-
-    private func videoSection(minHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VideoOverlayPlayerView(
-                session: session,
-                colorStyle: $colorStyle,
-                minVideoHeight: max(260, minHeight)
-            )
-                .frame(maxWidth: .infinity)
-
+    private var exportBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
                 Button {
                     exporter.exportCSV(session: session)
@@ -95,7 +100,6 @@ struct AnalysisResultsView: View {
                 }
             }
             .buttonStyle(.bordered)
-            .controlSize(.regular)
 
             if let message = exporter.message {
                 Text(message)
@@ -105,22 +109,4 @@ struct AnalysisResultsView: View {
             }
         }
     }
-
-    // MARK: - Stats (reps, metrics, critique, recommendation)
-
-    private var statsSection: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            MetricsView(session: session)
-            TechniqueCritiqueView(critique: session.analysis?.critique)
-            RecommendationView(session: session)
-
-            Text("This analysis is an estimate based on video and may be inaccurate. Use it as a training aid, not as medical advice or a replacement for a qualified coach. Stop lifting if you feel pain or unsafe.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .padding()
-                .background(Color.yellow.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
-
 }
