@@ -39,9 +39,14 @@ final class AnnotatedVideoExportService {
         let naturalSize = (try? await videoTrack.load(.naturalSize)) ?? CGSize(width: 1280, height: 720)
         let preferredTransform = (try? await videoTrack.load(.preferredTransform)) ?? .identity
         let orientedSize = naturalSize.applying(preferredTransform)
-        let renderSize = Self.cappedRenderSize(
-            CGSize(width: max(16, abs(orientedSize.width)), height: max(16, abs(orientedSize.height)))
-        )
+        let rawWidth = max(16, abs(orientedSize.width))
+        let rawHeight = max(16, abs(orientedSize.height))
+        // Downscale the render so the per-frame overlay compositing and encode
+        // are fast enough to finish (the full-resolution export was so slow it
+        // looked like an endless spinner).
+        let maxSide: CGFloat = 960
+        let downscale = min(1, maxSide / max(rawWidth, rawHeight))
+        let renderSize = CGSize(width: (rawWidth * downscale).rounded(), height: (rawHeight * downscale).rounded())
 
         let overlayRenderer = AnnotatedVideoOverlayRenderer(path: analysis.trackedPath, reps: session.reps, colorStyle: colorStyle)
         let videoComposition = AVMutableVideoComposition(asset: asset) { request in
@@ -54,65 +59,44 @@ final class AnnotatedVideoExportService {
             let overlay = overlayRenderer.overlayImage(
                 size: extent.size,
                 extent: extent,
-                currentTime: nil
+                currentTime: request.compositionTime.seconds
             )
             request.finish(with: overlay.composited(over: source).cropped(to: extent), context: nil)
         }
         videoComposition.renderSize = renderSize
         videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, Int(round(fps)))))
 
-        let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
-        let preset: String
-        if compatiblePresets.contains(AVAssetExportPresetHighestQuality) {
-            preset = AVAssetExportPresetHighestQuality
-        } else if compatiblePresets.contains(AVAssetExportPreset1280x720) {
-            preset = AVAssetExportPreset1280x720
-        } else if compatiblePresets.contains(AVAssetExportPresetMediumQuality) {
-            preset = AVAssetExportPresetMediumQuality
-        } else {
-            preset = compatiblePresets.first ?? AVAssetExportPresetHighestQuality
-        }
-
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: preset) else {
-            throw ExportError.exportFailed
-        }
-
-        let outputType: AVFileType = exportSession.supportedFileTypes.contains(.mp4) ? .mp4 : .mov
-        let fileExtension = outputType == .mp4 ? "mp4" : "mov"
-        let destination = try storage.makeExportURL(fileName: "\(session.liftType.rawValue)-annotated-\(session.id.uuidString.prefix(8)).\(fileExtension)")
+        let destination = try storage.makeExportURL(fileName: "\(session.liftType.rawValue)-annotated-\(session.id.uuidString.prefix(8)).mp4")
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
 
+        guard let exportSession = AVAssetExportSession(
+            asset: asset,
+            presetName: AVAssetExportPresetHighestQuality
+        ) else {
+            throw ExportError.exportFailed
+        }
+
         exportSession.outputURL = destination
-        exportSession.outputFileType = outputType
+        exportSession.outputFileType = .mp4
         exportSession.videoComposition = videoComposition
-        exportSession.shouldOptimizeForNetworkUse = true
 
         let exportBox = ExportSessionBox(exportSession)
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                try await exportBox.export()
+        try await withCheckedThrowingContinuation { continuation in
+            exportBox.session.exportAsynchronously {
+                switch exportBox.session.status {
+                case .completed:
+                    continuation.resume()
+                case .failed, .cancelled:
+                    continuation.resume(throwing: exportBox.session.error ?? ExportError.exportFailed)
+                default:
+                    continuation.resume(throwing: ExportError.exportFailed)
+                }
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: 90_000_000_000)
-                exportBox.session.cancelExport()
-                throw ExportError.exportTimedOut
-            }
-            try await group.next()
-            group.cancelAll()
         }
 
         return destination
-    }
-
-    private static func cappedRenderSize(_ size: CGSize) -> CGSize {
-        let maxDimension: CGFloat = 1280
-        let scale = min(1, maxDimension / max(size.width, size.height, 1))
-        return CGSize(
-            width: max(16, (size.width * scale).rounded()),
-            height: max(16, (size.height * scale).rounded())
-        )
     }
 }
 
@@ -121,21 +105,6 @@ private final class ExportSessionBox: @unchecked Sendable {
 
     init(_ session: AVAssetExportSession) {
         self.session = session
-    }
-
-    func export() async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            session.exportAsynchronously {
-                switch self.session.status {
-                case .completed:
-                    continuation.resume()
-                case .failed, .cancelled:
-                    continuation.resume(throwing: self.session.error ?? ExportError.exportFailed)
-                default:
-                    continuation.resume(throwing: ExportError.exportFailed)
-                }
-            }
-        }
     }
 }
 
@@ -192,7 +161,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
 
     private func visiblePath(through currentTime: Double?) -> [TrackedPoint] {
         guard let currentTime else { return path }
-        return frameAlignedPath(from: path, at: currentTime)
+        return frameAlignedPath(from: path, at: currentTime, offsetsFromFirstFrame: true)
     }
 
     private func drawVelocityPath(size: CGSize, visiblePath: [TrackedPoint], currentTime: Double?) {
@@ -236,7 +205,7 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
     }
 
     private func visiblePath(from points: [TrackedPoint], through currentTime: Double) -> [TrackedPoint] {
-        frameAlignedPath(from: points, at: currentTime)
+        frameAlignedPath(from: points, at: currentTime, offsetsFromFirstFrame: false)
     }
 
     private func drawVelocitySegments(_ segments: [VelocitySegment], opacity: Double, size: CGSize) {
@@ -296,12 +265,13 @@ final class AnnotatedVideoOverlayRenderer: @unchecked Sendable {
 
     private func frameAlignedPath(
         from points: [TrackedPoint],
-        at playbackTime: Double
+        at playbackTime: Double,
+        offsetsFromFirstFrame: Bool
     ) -> [TrackedPoint] {
         guard let first = points.first else { return [] }
         guard points.count > 1 else { return points }
 
-        let timelineTime = playbackTime
+        let timelineTime = playbackTime + (offsetsFromFirstFrame ? max(0, first.timestamp) : 0)
         if timelineTime <= first.timestamp {
             return [first]
         }
@@ -339,7 +309,6 @@ enum ExportError: LocalizedError {
     case missingVideo
     case missingVideoTrack
     case exportFailed
-    case exportTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -347,7 +316,6 @@ enum ExportError: LocalizedError {
         case .missingVideo: return "The source video is unavailable."
         case .missingVideoTrack: return "The video track could not be read."
         case .exportFailed: return "The annotated video export failed."
-        case .exportTimedOut: return "The annotated video export took too long and was cancelled. Try trimming the clip shorter, then export again."
         }
     }
 }

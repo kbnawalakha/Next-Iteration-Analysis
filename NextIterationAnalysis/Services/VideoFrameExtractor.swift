@@ -25,9 +25,7 @@ final class VideoFrameExtractor {
     func extractFrames(
         from url: URL,
         maxFrames: Int = 600,
-        timeRange: ClosedRange<Double>? = nil,
-        maxImageDimension: Int = 640,
-        usesExactTiming: Bool = true
+        timeRange: ClosedRange<Double>? = nil
     ) async throws -> [VideoFrame] {
         try await Task.detached(priority: .userInitiated) {
             let asset = AVURLAsset(url: url)
@@ -47,13 +45,9 @@ final class VideoFrameExtractor {
 
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
-            let boundedMaxDimension = max(160, maxImageDimension)
-            generator.maximumSize = CGSize(width: CGFloat(boundedMaxDimension), height: CGFloat(boundedMaxDimension))
-            let tolerance = usesExactTiming
-                ? CMTime.zero
-                : CMTime(seconds: max(0.01, step * 0.5), preferredTimescale: 600)
-            generator.requestedTimeToleranceBefore = tolerance
-            generator.requestedTimeToleranceAfter = tolerance
+            generator.maximumSize = CGSize(width: 640, height: 640)
+            generator.requestedTimeToleranceBefore = CMTime(seconds: 0.02, preferredTimescale: 600)
+            generator.requestedTimeToleranceAfter = CMTime(seconds: 0.02, preferredTimescale: 600)
 
             return (0..<frameCount).compactMap { index in
                 // Sample the centre of each frame interval within the span.
@@ -63,9 +57,8 @@ final class VideoFrameExtractor {
                 do {
                     var actualTime = CMTime.zero
                     let image = try generator.copyCGImage(at: time, actualTime: &actualTime)
-                    let resolvedSeconds = actualTime.seconds.isFinite ? actualTime.seconds : seconds
                     return VideoFrame(
-                        timestamp: max(0, resolvedSeconds - start),
+                        timestamp: actualTime.seconds.isFinite ? actualTime.seconds : seconds,
                         frameIndex: index,
                         image: image,
                         nominalFrameRate: fps
@@ -78,10 +71,6 @@ final class VideoFrameExtractor {
     }
 
     func firstFrame(from url: URL) async throws -> VideoFrame? {
-        try await firstFrame(from: url, at: 0)
-    }
-
-    func firstFrame(from url: URL, at seconds: Double) async throws -> VideoFrame? {
         try await Task.detached(priority: .userInitiated) {
             let asset = AVURLAsset(url: url)
             let generator = AVAssetImageGenerator(asset: asset)
@@ -89,10 +78,9 @@ final class VideoFrameExtractor {
             generator.maximumSize = CGSize(width: 900, height: 900)
 
             var actualTime = CMTime.zero
-            let requestedTime = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-            let image = try generator.copyCGImage(at: requestedTime, actualTime: &actualTime)
+            let image = try generator.copyCGImage(at: .zero, actualTime: &actualTime)
             return VideoFrame(
-                timestamp: 0,
+                timestamp: actualTime.seconds.isFinite ? actualTime.seconds : 0,
                 frameIndex: 0,
                 image: image,
                 nominalFrameRate: try await Self.videoFrameRate(for: asset)
@@ -102,6 +90,31 @@ final class VideoFrameExtractor {
 
     func imageFromFile(_ url: URL) -> CGImage? {
         UIImage(contentsOfFile: url.path)?.cgImage
+    }
+
+    /// Evenly-spaced thumbnails across the clip, for a visual trim filmstrip
+    /// so the user can see the video while selecting a segment.
+    func thumbnails(from url: URL, count: Int = 8) async -> [UIImage] {
+        await Task.detached(priority: .userInitiated) { () -> [UIImage] in
+            let asset = AVURLAsset(url: url)
+            guard let duration = try? await asset.load(.duration).seconds, duration > 0 else { return [] }
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 220, height: 220)
+            generator.requestedTimeToleranceBefore = CMTime(seconds: 0.1, preferredTimescale: 600)
+            generator.requestedTimeToleranceAfter = CMTime(seconds: 0.1, preferredTimescale: 600)
+
+            let total = max(1, count)
+            var images: [UIImage] = []
+            for index in 0..<total {
+                let seconds = duration * (Double(index) + 0.5) / Double(total)
+                let time = CMTime(seconds: seconds, preferredTimescale: 600)
+                if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                    images.append(UIImage(cgImage: cgImage))
+                }
+            }
+            return images
+        }.value
     }
 
     private static func videoFrameRate(for asset: AVURLAsset) async throws -> Double {
@@ -182,45 +195,24 @@ struct LuminanceFrame {
         let approximateRadius = max(7, min(width, height) / 22)
         let centerX = Int(point.x * Double(width))
         let centerY = Int(point.y * Double(height))
-        let searchRadius = Int(max(6, maxCenterDistancePixels ?? Double(approximateRadius) * 2.2))
+        let searchRadius = Int(max(6, min(maxCenterDistancePixels ?? Double(approximateRadius), Double(approximateRadius) * 1.4)))
         let expectedRadius = expectedRadiusPixels ?? Double(approximateRadius)
-        let radiusCandidates: [Double]
-        if let expectedRadiusPixels {
-            radiusCandidates = [
-                expectedRadiusPixels * 0.72,
-                expectedRadiusPixels * 0.88,
-                expectedRadiusPixels,
-                expectedRadiusPixels * 1.16,
-                expectedRadiusPixels * 1.32
-            ]
-        } else {
-            let frameBase = Double(min(width, height))
-            radiusCandidates = [
-                expectedRadius * 0.70,
-                expectedRadius,
-                expectedRadius * 1.35,
-                frameBase * 0.075,
-                frameBase * 0.10,
-                frameBase * 0.13
-            ]
-        }
-        let radii = Array(Set(radiusCandidates.map { max(5, Int($0.rounded())) })).sorted()
+        let radii = [
+            max(5, Int((expectedRadius * 0.82).rounded())),
+            max(5, Int(expectedRadius.rounded())),
+            max(5, Int((expectedRadius * 1.18).rounded()))
+        ]
 
         var bestScore = 0.0
         var bestFit: PlateFit?
 
-        for y in stride(from: max(0, centerY - searchRadius), through: min(height - 1, centerY + searchRadius), by: 2) {
-            for x in stride(from: max(0, centerX - searchRadius), through: min(width - 1, centerX + searchRadius), by: 2) {
+        for y in stride(from: centerY - searchRadius, through: centerY + searchRadius, by: 2) {
+            for x in stride(from: centerX - searchRadius, through: centerX + searchRadius, by: 2) {
                 for radius in radii {
                     let contrast = circularContrastScore(centerX: x, centerY: y, radius: radius)
                     let circularity = radialEdgeConsistency(centerX: x, centerY: y, radius: radius)
-                    let sleeve = centerSleeveScore(centerX: x, centerY: y, radius: radius)
                     let radiusPenalty = expectedRadiusPixels.map { max(0, 1 - abs(Double(radius) - $0) / max($0, 1)) } ?? 1
-                    let dx = Double(x - centerX)
-                    let dy = Double(y - centerY)
-                    let distance = (dx * dx + dy * dy).squareRoot()
-                    let proximity = max(0, 1 - distance / max(Double(searchRadius), 1))
-                    let score = contrast * 0.38 + circularity * 0.28 + sleeve * 0.20 + radiusPenalty * 0.06 + proximity * 0.08
+                    let score = contrast * 0.58 + circularity * 0.28 + radiusPenalty * 0.14
                     if score > bestScore {
                         bestScore = score
                         bestFit = PlateFit(
@@ -279,45 +271,6 @@ struct LuminanceFrame {
         let contrast = abs(inner - ring) / 255
         let darknessBias = max(0, 1 - inner / 255)
         return contrast * 0.75 + darknessBias * 0.25
-    }
-
-    private func centerSleeveScore(centerX: Int, centerY: Int, radius: Int) -> Double {
-        let centerRadius = max(2, Int((Double(radius) * 0.22).rounded()))
-        let sleeveOuterRadius = max(centerRadius + 2, Int((Double(radius) * 0.48).rounded()))
-        guard centerX - sleeveOuterRadius >= 0, centerY - sleeveOuterRadius >= 0,
-              centerX + sleeveOuterRadius < width, centerY + sleeveOuterRadius < height else {
-            return 0
-        }
-
-        var centerTotal = 0
-        var centerCount = 0
-        var plateTotal = 0
-        var plateCount = 0
-        let centerSquared = centerRadius * centerRadius
-        let outerSquared = sleeveOuterRadius * sleeveOuterRadius
-
-        for y in (centerY - sleeveOuterRadius)...(centerY + sleeveOuterRadius) {
-            let offset = y * width
-            for x in (centerX - sleeveOuterRadius)...(centerX + sleeveOuterRadius) {
-                let dx = x - centerX
-                let dy = y - centerY
-                let distance = dx * dx + dy * dy
-                if distance <= centerSquared {
-                    centerTotal += Int(pixels[offset + x])
-                    centerCount += 1
-                } else if distance <= outerSquared {
-                    plateTotal += Int(pixels[offset + x])
-                    plateCount += 1
-                }
-            }
-        }
-
-        guard centerCount > 0, plateCount > 0 else { return 0 }
-        let center = Double(centerTotal) / Double(centerCount)
-        let plate = Double(plateTotal) / Double(plateCount)
-        let contrast = min(1, abs(center - plate) / 95)
-        let sleeveBias = max(0, 1 - min(center, plate) / max(max(center, plate), 1))
-        return min(1, contrast * 0.78 + sleeveBias * 0.22)
     }
 
     private func radialEdgeConsistency(centerX: Int, centerY: Int, radius: Int) -> Double {
