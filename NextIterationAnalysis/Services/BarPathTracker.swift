@@ -38,9 +38,9 @@ struct PlateDetectionResult {
 final class AutomaticPlateDetectionService {
     private let frameExtractor = VideoFrameExtractor()
 
-    func detectPlateStartPoint(videoURL: URL?, thumbnailURL: URL?) async -> PlateDetectionResult {
+    func detectPlateStartPoint(videoURL: URL?, thumbnailURL: URL?, startTime: Double = 0) async -> PlateDetectionResult {
         if let videoURL = videoURL,
-           let frame = try? await frameExtractor.firstFrame(from: videoURL),
+           let frame = try? await frameExtractor.firstFrame(from: videoURL, at: startTime),
            let candidate = detectInImage(frame.image) {
             return candidate
         }
@@ -394,15 +394,25 @@ final class BarPathTracker: @unchecked Sendable {
         startingPoint: NormalizedPoint,
         reps: Int,
         mode: TrackingMode,
-        timeRange: ClosedRange<Double>? = nil
+        timeRange: ClosedRange<Double>? = nil,
+        maxFrames: Int = 360,
+        frameMaxDimension: Int = 640,
+        usesExactFrameTiming: Bool = false
     ) async -> [TrackedPoint] {
         if let videoURL = videoURL,
            // Run the heavy per-frame tracking OFF the main thread. It was
            // running on the caller's main actor, which froze the UI and made
            // analysis appear to stop right after the tracking step.
-           let trackedPoints = try? await Task.detached(priority: .userInitiated) { [self] in
-               try await trackPlate(videoURL: videoURL, startingPoint: startingPoint, timeRange: timeRange)
-           }.value,
+           let trackedPoints = try? await Task.detached(priority: .userInitiated, operation: { [self] in
+               try await trackPlate(
+                    videoURL: videoURL,
+                    startingPoint: startingPoint,
+                    timeRange: timeRange,
+                    maxFrames: maxFrames,
+                    frameMaxDimension: frameMaxDimension,
+                    usesExactFrameTiming: usesExactFrameTiming
+               )
+           }).value,
            trackingScore(trackedPoints) > 0.18 {
             return preserveInitialPoint(
                 SmoothingUtils.kalmanSmooth(SmoothingUtils.movingAverage(trackedPoints)),
@@ -427,12 +437,21 @@ final class BarPathTracker: @unchecked Sendable {
     private func trackPlate(
         videoURL: URL,
         startingPoint: NormalizedPoint,
-        timeRange: ClosedRange<Double>? = nil
+        timeRange: ClosedRange<Double>? = nil,
+        maxFrames: Int = 360,
+        frameMaxDimension: Int = 640,
+        usesExactFrameTiming: Bool = false
     ) async throws -> [TrackedPoint] {
         // Cap total processed frames for speed (and bound memory). Native fps is
         // preserved for typical-length clips; long clips decimate — trim to keep
         // full fidelity. A smaller processing resolution speeds up per-frame work.
-        let frames = try await frameExtractor.extractFrames(from: videoURL, maxFrames: 360, timeRange: timeRange)
+        let frames = try await frameExtractor.extractFrames(
+            from: videoURL,
+            maxFrames: maxFrames,
+            timeRange: timeRange,
+            maxImageDimension: frameMaxDimension,
+            usesExactTiming: usesExactFrameTiming
+        )
         let colorMaxWidth = 200
         guard let firstFrame = frames.first,
               let firstLuminance = LuminanceFrame(image: firstFrame.image) else {

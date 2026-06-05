@@ -25,7 +25,9 @@ final class VideoFrameExtractor {
     func extractFrames(
         from url: URL,
         maxFrames: Int = 600,
-        timeRange: ClosedRange<Double>? = nil
+        timeRange: ClosedRange<Double>? = nil,
+        maxImageDimension: Int = 640,
+        usesExactTiming: Bool = false
     ) async throws -> [VideoFrame] {
         try await Task.detached(priority: .userInitiated) {
             let asset = AVURLAsset(url: url)
@@ -45,9 +47,13 @@ final class VideoFrameExtractor {
 
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 640, height: 640)
-            generator.requestedTimeToleranceBefore = CMTime(seconds: 0.02, preferredTimescale: 600)
-            generator.requestedTimeToleranceAfter = CMTime(seconds: 0.02, preferredTimescale: 600)
+            let boundedMaxDimension = max(160, maxImageDimension)
+            generator.maximumSize = CGSize(width: CGFloat(boundedMaxDimension), height: CGFloat(boundedMaxDimension))
+            let tolerance = usesExactTiming
+                ? CMTime.zero
+                : CMTime(seconds: max(0.02, step * 0.5), preferredTimescale: 600)
+            generator.requestedTimeToleranceBefore = tolerance
+            generator.requestedTimeToleranceAfter = tolerance
 
             return (0..<frameCount).compactMap { index in
                 // Sample the centre of each frame interval within the span.
@@ -71,16 +77,23 @@ final class VideoFrameExtractor {
     }
 
     func firstFrame(from url: URL) async throws -> VideoFrame? {
+        try await firstFrame(from: url, at: 0)
+    }
+
+    func firstFrame(from url: URL, at seconds: Double) async throws -> VideoFrame? {
         try await Task.detached(priority: .userInitiated) {
             let asset = AVURLAsset(url: url)
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
             generator.maximumSize = CGSize(width: 900, height: 900)
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
 
             var actualTime = CMTime.zero
-            let image = try generator.copyCGImage(at: .zero, actualTime: &actualTime)
+            let requestedTime = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+            let image = try generator.copyCGImage(at: requestedTime, actualTime: &actualTime)
             return VideoFrame(
-                timestamp: actualTime.seconds.isFinite ? actualTime.seconds : 0,
+                timestamp: actualTime.seconds.isFinite ? actualTime.seconds : seconds,
                 frameIndex: 0,
                 image: image,
                 nominalFrameRate: try await Self.videoFrameRate(for: asset)

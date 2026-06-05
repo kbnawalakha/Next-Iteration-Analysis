@@ -177,7 +177,10 @@ final class AnalysisViewModel: ObservableObject {
 
             try await step(.recommendingWeight)
             let recommendation = recommendationService.recommend(details: analyzedDetails, metrics: metrics)
-            let confidence = path.map(\.confidence).reduce(0, +) / Double(max(path.count, 1)) * 100
+            let confidenceTotal = path.reduce(0.0) { total, point in
+                total + point.confidence
+            }
+            let confidence = confidenceTotal / Double(max(path.count, 1)) * 100
 
             session = LiftSession(
                 id: UUID(),
