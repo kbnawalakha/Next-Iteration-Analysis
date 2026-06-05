@@ -30,10 +30,16 @@ struct VideoOverlayPlayerView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ZStack {
+        GeometryReader { proxy in
+            let videoRect = fittedVideoRect(in: proxy.size)
+
+            ZStack(alignment: .bottom) {
+                Color.black
+
                 if session.videoURL != nil {
                     VideoPlayer(player: player)
+                        .frame(width: videoRect.width, height: videoRect.height)
+                        .position(x: videoRect.midX, y: videoRect.midY)
                 } else {
                     Rectangle()
                         .fill(Color.secondary.opacity(0.12))
@@ -46,6 +52,8 @@ struct VideoOverlayPlayerView: View {
                             }
                             .foregroundStyle(.secondary)
                         }
+                        .frame(width: videoRect.width, height: videoRect.height)
+                        .position(x: videoRect.midX, y: videoRect.midY)
                 }
 
                 VelocityBarPathOverlay(
@@ -55,19 +63,37 @@ struct VideoOverlayPlayerView: View {
                     colorStyle: colorStyle
                 )
                     .allowsHitTesting(false)
-            }
-            .aspectRatio(session.videoAspectRatio ?? 16 / 9, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .frame(width: videoRect.width, height: videoRect.height)
+                    .position(x: videoRect.midX, y: videoRect.midY)
 
-            Picker("Bar path color", selection: $colorStyle) {
-                ForEach(BarPathColorStyle.allCases) { style in
-                    Text(style.displayName).tag(style)
+                Picker("Bar path color", selection: $colorStyle) {
+                    ForEach(BarPathColorStyle.allCases) { style in
+                        Text(style.displayName).tag(style)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .padding(8)
+                .background(.thinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding()
             }
-            .pickerStyle(.segmented)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .onAppear(perform: configurePlayer)
         .onDisappear(perform: tearDownPlayer)
+    }
+
+    private func fittedVideoRect(in container: CGSize) -> CGRect {
+        let aspectRatio = session.videoAspectRatio ?? 16 / 9
+        let containerRatio = container.width / max(container.height, 1)
+
+        if containerRatio > aspectRatio {
+            let width = container.height * aspectRatio
+            return CGRect(x: (container.width - width) / 2, y: 0, width: width, height: container.height)
+        } else {
+            let height = container.width / max(aspectRatio, 0.001)
+            return CGRect(x: 0, y: (container.height - height) / 2, width: container.width, height: height)
+        }
     }
 
     private func configurePlayer() {

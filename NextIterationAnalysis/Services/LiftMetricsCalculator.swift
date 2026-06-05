@@ -165,11 +165,12 @@ final class LiftMetricsCalculator {
         guard let minY = ys.min(), let maxY = ys.max() else { return [] }
         let amplitude = maxY - minY
         // Require a meaningful amount of vertical travel before counting reps.
-        guard amplitude > 0.06 else { return [] }
+        guard amplitude > 0.04 else { return [] }
 
         // y increases downward, so the "bottom" of a rep is a HIGH y value.
-        let enterBottom = minY + amplitude * 0.60
-        let returnTop = minY + amplitude * 0.40
+        let enterBottom = minY + amplitude * 0.56
+        let returnTop = minY + amplitude * 0.46
+        let minimumGap = max(4, path.count / max(fallbackReps * 3, 8))
 
         var bottoms: [Int] = []
         var inBottomPhase = false
@@ -190,7 +191,7 @@ final class LiftMetricsCalculator {
                     deepestIndex = index
                 }
                 if y <= returnTop {
-                    bottoms.append(deepestIndex)
+                    appendBottom(deepestIndex, to: &bottoms, ys: ys, minimumGap: minimumGap)
                     inBottomPhase = false
                     deepestValue = -Double.greatestFiniteMagnitude
                 }
@@ -199,10 +200,49 @@ final class LiftMetricsCalculator {
 
         // The lifter may finish at (or near) the bottom without fully returning.
         if inBottomPhase {
-            bottoms.append(deepestIndex)
+            appendBottom(deepestIndex, to: &bottoms, ys: ys, minimumGap: minimumGap)
         }
 
-        return bottoms
+        let candidates = (bottoms + localBottomCandidates(ys: ys, enterBottom: enterBottom, minimumGap: minimumGap)).sorted()
+        var mergedBottoms: [Int] = []
+        for candidate in candidates {
+            appendBottom(candidate, to: &mergedBottoms, ys: ys, minimumGap: minimumGap)
+        }
+
+        return mergedBottoms
+    }
+
+    private func localBottomCandidates(ys: [Double], enterBottom: Double, minimumGap: Int) -> [Int] {
+        guard ys.count >= 3 else { return [] }
+        var candidates: [Int] = []
+        var index = 1
+
+        while index < ys.count - 1 {
+            let y = ys[index]
+            if y >= enterBottom, y >= ys[index - 1], y >= ys[index + 1] {
+                appendBottom(index, to: &candidates, ys: ys, minimumGap: minimumGap)
+                index += minimumGap
+            } else {
+                index += 1
+            }
+        }
+
+        return candidates
+    }
+
+    private func appendBottom(_ index: Int, to bottoms: inout [Int], ys: [Double], minimumGap: Int) {
+        guard let previous = bottoms.last else {
+            bottoms.append(index)
+            return
+        }
+
+        if index - previous < minimumGap {
+            if ys[index] > ys[previous] {
+                bottoms[bottoms.count - 1] = index
+            }
+        } else {
+            bottoms.append(index)
+        }
     }
 
     private func rawSpeed(from previous: TrackedPoint, to current: TrackedPoint) -> Double {

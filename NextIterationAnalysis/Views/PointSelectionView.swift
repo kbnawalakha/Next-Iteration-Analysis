@@ -9,8 +9,14 @@ struct PointSelectionView: View {
     @State private var trimEnd: Double = 0
     @State private var didInitTrim = false
     @State private var trimThumbnails: [UIImage] = []
+    @State private var selectionFrameImage: UIImage?
+    @State private var detectionTask: Task<Void, Never>?
+    @State private var analysisQuality: AnalysisQuality = .fast
+    @State private var trimStartDragOrigin: Double?
+    @State private var trimEndDragOrigin: Double?
 
     private var duration: Double { max(0, importedVideo?.metadata.duration ?? 0) }
+    private var selectedStartTime: Double { min(trimStart, trimEnd) }
 
     /// The [start, end] seconds to analyze, or `nil` for the whole video.
     private var selectedRange: ClosedRange<Double>? {
@@ -55,7 +61,9 @@ struct PointSelectionView: View {
                         details: details,
                         startPoint: viewModel.selectedPoint,
                         trackingMode: viewModel.trackingMode,
-                        timeRange: selectedRange
+                        usesManualStartPoint: viewModel.isManuallyAdjusted,
+                        timeRange: selectedRange,
+                        analysisQuality: analysisQuality
                     )
                 )
             } label: {
@@ -78,9 +86,10 @@ struct PointSelectionView: View {
                 trimEnd = duration
                 didInitTrim = true
             }
+            updateTrimStartFrame(selectedStartTime, detectPlate: true)
         }
-        .task {
-            await viewModel.autoDetect(video: importedVideo)
+        .onDisappear {
+            detectionTask?.cancel()
         }
         .task {
             if let url = importedVideo?.videoURL {
@@ -106,14 +115,12 @@ struct PointSelectionView: View {
 
                 filmstrip
 
-                HStack(spacing: 8) {
-                    Text("Start").font(.caption).foregroundStyle(.secondary).frame(width: 38, alignment: .leading)
-                    Slider(value: $trimStart, in: 0...duration)
+                Picker("Analysis speed", selection: $analysisQuality) {
+                    ForEach(AnalysisQuality.allCases) { quality in
+                        Text(quality.displayName).tag(quality)
+                    }
                 }
-                HStack(spacing: 8) {
-                    Text("End").font(.caption).foregroundStyle(.secondary).frame(width: 38, alignment: .leading)
-                    Slider(value: $trimEnd, in: 0...duration)
-                }
+                .pickerStyle(.segmented)
 
                 HStack {
                     Text(selectedRange == nil
@@ -135,12 +142,13 @@ struct PointSelectionView: View {
         }
     }
 
-    // Visual filmstrip of the clip so the segment is chosen against real frames
-    // rather than a blind slider. The selected range is highlighted.
+    // Visual filmstrip of the clip so the segment is chosen against real frames.
+    // The handles are dragged directly on the filmstrip, like an iPhone trim UI.
     @ViewBuilder
     private var filmstrip: some View {
         GeometryReader { geo in
             let width = geo.size.width
+            let height = geo.size.height
             let lowerFraction = duration > 0 ? min(trimStart, trimEnd) / duration : 0
             let upperFraction = duration > 0 ? max(trimStart, trimEnd) / duration : 1
             ZStack(alignment: .leading) {
@@ -152,7 +160,7 @@ struct PointSelectionView: View {
                             Image(uiImage: image)
                                 .resizable()
                                 .scaledToFill()
-                                .frame(width: width / CGFloat(trimThumbnails.count), height: 60)
+                                .frame(width: width / CGFloat(trimThumbnails.count), height: height)
                                 .clipped()
                         }
                     }
@@ -169,11 +177,56 @@ struct PointSelectionView: View {
                     .stroke(Color.accentColor, lineWidth: 2)
                     .frame(width: max(0, (upperFraction - lowerFraction) * width))
                     .offset(x: lowerFraction * width)
+
+                trimHandle
+                    .position(x: lowerFraction * width, y: height / 2)
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let origin = trimStartDragOrigin ?? trimStart
+                                trimStartDragOrigin = origin
+                                updateTrimStart(origin + (value.translation.width / max(width, 1)) * duration, detectPlate: false)
+                            }
+                            .onEnded { value in
+                                let origin = trimStartDragOrigin ?? trimStart
+                                updateTrimStart(origin + (value.translation.width / max(width, 1)) * duration, detectPlate: true)
+                                trimStartDragOrigin = nil
+                            }
+                    )
+
+                trimHandle
+                    .position(x: upperFraction * width, y: height / 2)
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let origin = trimEndDragOrigin ?? trimEnd
+                                trimEndDragOrigin = origin
+                                updateTrimEnd(origin + (value.translation.width / max(width, 1)) * duration)
+                            }
+                            .onEnded { value in
+                                let origin = trimEndDragOrigin ?? trimEnd
+                                updateTrimEnd(origin + (value.translation.width / max(width, 1)) * duration)
+                                trimEndDragOrigin = nil
+                                updateTrimStartFrame(selectedStartTime, detectPlate: true)
+                            }
+                    )
             }
-            .frame(height: 60)
+            .frame(height: height)
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-        .frame(height: 60)
+        .frame(height: 84)
+    }
+
+    private var trimHandle: some View {
+        RoundedRectangle(cornerRadius: 3)
+            .fill(Color.accentColor)
+            .frame(width: 18, height: 84)
+            .overlay {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(.white.opacity(0.9))
+                    .frame(width: 3, height: 38)
+            }
+            .shadow(radius: 2)
     }
 
     private func timeString(_ seconds: Double) -> String {
@@ -194,7 +247,12 @@ struct PointSelectionView: View {
         GeometryReader { proxy in
             let imageRect = fittedImageRect(in: proxy.size)
             ZStack {
-                if let thumbnailURL = importedVideo?.thumbnailURL,
+                if let selectionFrameImage {
+                    Image(uiImage: selectionFrameImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let thumbnailURL = importedVideo?.thumbnailURL,
                    let uiImage = UIImage(contentsOfFile: thumbnailURL.path) {
                     Image(uiImage: uiImage)
                         .resizable()
@@ -256,5 +314,47 @@ struct PointSelectionView: View {
             y: Double((clampedY - imageRect.minY) / max(imageRect.height, 1))
         )
         viewModel.markManuallyAdjusted()
+    }
+
+    private func updateTrimStart(_ seconds: Double, detectPlate: Bool) {
+        let bounded = min(max(seconds, 0), max(trimEnd - 0.1, 0))
+        trimStart = bounded
+        if detectPlate {
+            updateTrimStartFrame(bounded, detectPlate: true)
+        }
+    }
+
+    private func updateTrimEnd(_ seconds: Double) {
+        trimEnd = max(min(seconds, duration), min(trimStart + 0.1, duration))
+    }
+
+    private func updateTrimStartFrame(_ seconds: Double, detectPlate: Bool) {
+        Task {
+            await loadSelectionFrame(at: seconds)
+        }
+
+        guard detectPlate else { return }
+        detectionTask?.cancel()
+        detectionTask = Task {
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard !Task.isCancelled else { return }
+            await viewModel.autoDetect(video: importedVideo, startTime: seconds)
+        }
+    }
+
+    private func loadSelectionFrame(at seconds: Double) async {
+        guard let videoURL = importedVideo?.videoURL else { return }
+        let image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let frame = try? await VideoFrameExtractor().firstFrame(from: videoURL, at: seconds) else {
+                return nil
+            }
+            return UIImage(cgImage: frame.image)
+        }.value
+
+        await MainActor.run {
+            if let image {
+                selectionFrameImage = image
+            }
+        }
     }
 }

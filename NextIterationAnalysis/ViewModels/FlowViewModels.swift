@@ -176,7 +176,7 @@ final class AnalysisViewModel: ObservableObject {
             )
 
             try await step(.recommendingWeight)
-            let recommendation = recommendationService.recommend(details: analyzedDetails, metrics: metrics)
+            let recommendation = recommendationService.recommend(details: analyzedDetails, metrics: metrics, path: path)
             let confidenceTotal = path.reduce(0.0) { total, point in
                 total + point.confidence
             }

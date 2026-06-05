@@ -208,13 +208,30 @@ struct LuminanceFrame {
         let approximateRadius = max(7, min(width, height) / 22)
         let centerX = Int(point.x * Double(width))
         let centerY = Int(point.y * Double(height))
-        let searchRadius = Int(max(6, min(maxCenterDistancePixels ?? Double(approximateRadius), Double(approximateRadius) * 1.4)))
+        let requestedSearchRadius = maxCenterDistancePixels ?? Double(approximateRadius) * 2.2
+        let searchRadius = Int(max(6, min(requestedSearchRadius, Double(max(width, height)))))
         let expectedRadius = expectedRadiusPixels ?? Double(approximateRadius)
-        let radii = [
-            max(5, Int((expectedRadius * 0.82).rounded())),
-            max(5, Int(expectedRadius.rounded())),
-            max(5, Int((expectedRadius * 1.18).rounded()))
-        ]
+        let radiusCandidates: [Double]
+        if let expectedRadiusPixels {
+            radiusCandidates = [
+                expectedRadiusPixels * 0.72,
+                expectedRadiusPixels * 0.88,
+                expectedRadiusPixels,
+                expectedRadiusPixels * 1.16,
+                expectedRadiusPixels * 1.32
+            ]
+        } else {
+            let frameBase = Double(min(width, height))
+            radiusCandidates = [
+                expectedRadius * 0.70,
+                expectedRadius,
+                expectedRadius * 1.35,
+                frameBase * 0.075,
+                frameBase * 0.10,
+                frameBase * 0.13
+            ]
+        }
+        let radii = Array(Set(radiusCandidates.map { max(5, Int($0.rounded())) })).sorted()
 
         var bestScore = 0.0
         var bestFit: PlateFit?
@@ -224,8 +241,13 @@ struct LuminanceFrame {
                 for radius in radii {
                     let contrast = circularContrastScore(centerX: x, centerY: y, radius: radius)
                     let circularity = radialEdgeConsistency(centerX: x, centerY: y, radius: radius)
+                    let sleeve = centerSleeveScore(centerX: x, centerY: y, radius: radius)
                     let radiusPenalty = expectedRadiusPixels.map { max(0, 1 - abs(Double(radius) - $0) / max($0, 1)) } ?? 1
-                    let score = contrast * 0.58 + circularity * 0.28 + radiusPenalty * 0.14
+                    let dx = Double(x - centerX)
+                    let dy = Double(y - centerY)
+                    let distance = (dx * dx + dy * dy).squareRoot()
+                    let proximity = max(0, 1 - distance / max(Double(searchRadius), 1))
+                    let score = contrast * 0.36 + circularity * 0.26 + sleeve * 0.22 + radiusPenalty * 0.06 + proximity * 0.10
                     if score > bestScore {
                         bestScore = score
                         bestFit = PlateFit(
@@ -284,6 +306,45 @@ struct LuminanceFrame {
         let contrast = abs(inner - ring) / 255
         let darknessBias = max(0, 1 - inner / 255)
         return contrast * 0.75 + darknessBias * 0.25
+    }
+
+    private func centerSleeveScore(centerX: Int, centerY: Int, radius: Int) -> Double {
+        let centerRadius = max(2, Int((Double(radius) * 0.22).rounded()))
+        let sleeveOuterRadius = max(centerRadius + 2, Int((Double(radius) * 0.48).rounded()))
+        guard centerX - sleeveOuterRadius >= 0, centerY - sleeveOuterRadius >= 0,
+              centerX + sleeveOuterRadius < width, centerY + sleeveOuterRadius < height else {
+            return 0
+        }
+
+        var centerTotal = 0
+        var centerCount = 0
+        var plateTotal = 0
+        var plateCount = 0
+        let centerSquared = centerRadius * centerRadius
+        let outerSquared = sleeveOuterRadius * sleeveOuterRadius
+
+        for y in (centerY - sleeveOuterRadius)...(centerY + sleeveOuterRadius) {
+            let offset = y * width
+            for x in (centerX - sleeveOuterRadius)...(centerX + sleeveOuterRadius) {
+                let dx = x - centerX
+                let dy = y - centerY
+                let distance = dx * dx + dy * dy
+                if distance <= centerSquared {
+                    centerTotal += Int(pixels[offset + x])
+                    centerCount += 1
+                } else if distance <= outerSquared {
+                    plateTotal += Int(pixels[offset + x])
+                    plateCount += 1
+                }
+            }
+        }
+
+        guard centerCount > 0, plateCount > 0 else { return 0 }
+        let center = Double(centerTotal) / Double(centerCount)
+        let plate = Double(plateTotal) / Double(plateCount)
+        let contrast = min(1, abs(center - plate) / 95)
+        let sleeveBias = max(0, 1 - min(center, plate) / max(max(center, plate), 1))
+        return min(1, contrast * 0.78 + sleeveBias * 0.22)
     }
 
     private func radialEdgeConsistency(centerX: Int, centerY: Int, radius: Int) -> Double {
